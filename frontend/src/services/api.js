@@ -65,4 +65,22 @@ export const learningAPI = {
     getStats: () => api.get('/stats/learning'),
 };
 
+// Video Testing API
+export const videoAPI = {
+    processVideo: (video_path, camera_ids, duration_seconds) => {
+        const formData = new FormData();
+        formData.append('video_path', video_path);
+        formData.append('camera_ids', camera_ids);
+        formData.append('duration_seconds', duration_seconds);
+        return api.post('/video/process', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+        });
+    },
+};
+
+// Clusters API
+export const clusterAPI = {
+    getClusters: () => api.get('/clusters'),
+};
+
 export default api;

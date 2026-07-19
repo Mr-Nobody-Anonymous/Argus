@@ -753,6 +753,45 @@ async def get_learning_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== Video Testing Endpoints ====================
+
+@app.post("/api/v1/video/process", response_model=dict)
+async def process_test_video(
+    video_path: str = Form(...),
+    camera_ids: str = Form(...),
+    duration_seconds: int = Form(60)
+):
+    """Process a video file for cross-camera tracking testing"""
+    try:
+        tracker = get_cross_camera_tracker()
+        
+        # Parse camera IDs from comma-separated string
+        camera_id_list = [int(cid.strip()) for cid in camera_ids.split(',') if cid.strip().isdigit()]
+        
+        if not camera_id_list:
+            raise HTTPException(status_code=400, detail="Invalid camera IDs provided")
+        
+        result = tracker.process_video_file(video_path, camera_id_list, duration_seconds)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing test video: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/clusters", response_model=dict)
+async def get_trajectory_clusters():
+    """Get trajectory clustering analysis for tracked persons"""
+    try:
+        tracker = get_cross_camera_tracker()
+        clusters = tracker.get_clusters()
+        return {"clusters": clusters, "count": len(clusters)}
+    except Exception as e:
+        logger.error(f"Error getting clusters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== System Endpoints ====================
 
 @app.get("/api/v1/health", response_model=dict)

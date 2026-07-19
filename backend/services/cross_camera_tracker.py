@@ -15,8 +15,10 @@ if TYPE_CHECKING:
 
 try:
     import numpy as np
+    import cv2
 except ImportError:
     np = None
+    cv2 = None
 
 try:
     from scipy.spatial.distance import cosine
@@ -46,6 +48,7 @@ class CrossCameraTracker:
     - Allows targeted tracking by users
     - Uses ReID features for better matching
     - Integrates with Kafka for event streaming
+    - Supports video file testing
     """
 
     def __init__(self):
@@ -427,6 +430,103 @@ class CrossCameraTracker:
             clusters[label].append(person_ids[i])
 
         return [clusters[label] for label in clusters if label >= 0]
+
+    # ==================== Video Testing ====================
+
+    def process_video_file(self, video_path: str, camera_ids: List[int], duration_seconds: int = 60) -> Dict:
+        """
+        Process a video file for cross-camera tracking testing.
+        
+        Simulates processing the video through multiple camera views
+        for testing cross-camera tracking capabilities.
+        """
+        if cv2 is None:
+            return {"status": "error", "message": "OpenCV not available"}
+        
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return {"status": "error", "message": "Could not open video file"}
+            
+            frame_count = 0
+            processed_frames = 0
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Process frames from the video
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                frame_count += 1
+                
+                # Simulate cross-camera tracking every 10 frames
+                if frame_count % 10 == 0 and camera_ids:
+                    # Rotate through camera IDs for testing
+                    current_camera_idx = (frame_count // 10) % len(camera_ids)
+                    camera_id = camera_ids[current_camera_idx]
+                    
+                    # Simulate detection with random person ID for testing
+                    person_id = f"test_person_{camera_id}_{frame_count}"
+                    
+                    # Add track point with mock features
+                    if np is not None:
+                        mock_features = np.random.rand(512).astype(np.float32)
+                        bbox = [100, 100, 200, 400]  # Mock bounding box
+                        
+                        # Set as target if not already tracked
+                        if person_id not in self.targeted_persons:
+                            self.set_target(person_id, camera_id, "video_test")
+                        
+                        self.add_track_point(person_id, camera_id, bbox, mock_features)
+                    
+                    processed_frames += 1
+                
+                # Stop after specified duration
+                if frame_count >= int(fps * duration_seconds):
+                    break
+            
+            cap.release()
+            
+            return {
+                "status": "success",
+                "frames_processed": processed_frames,
+                "total_frames": frame_count,
+                "targets_created": len(self.targeted_persons),
+                "message": f"Processed {processed_frames} test frames from video"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing video file: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def get_clusters(self) -> List[Dict]:
+        """
+        Get trajectory clusters with person details.
+        Useful for video testing analysis.
+        """
+        clusters = self.cluster_trajectories()
+        result = []
+        
+        for i, cluster in enumerate(clusters):
+            cluster_info = {
+                "cluster_id": i,
+                "person_count": len(cluster),
+                "persons": []
+            }
+            
+            for person_id in cluster:
+                track = self.targeted_persons.get(person_id, {})
+                cluster_info["persons"].append({
+                    "person_id": person_id,
+                    "path_points": len(track.get('path', [])),
+                    "cameras": list(set(p.get('camera_id') for p in track.get('path', [])))
+                })
+            
+            result.append(cluster_info)
+        
+        return result
 
     # ==================== Tracking Path ====================
 
