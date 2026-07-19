@@ -1,8 +1,9 @@
 /**
  * Advanced Surveillance Dashboard
  * Modern command center UI with real-time video feeds and alerts
+ * Integrated with Cross-Camera Tracker and Enhanced Learning
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     Box,
     Typography,
@@ -21,6 +22,13 @@ import {
     Tab,
     Switch,
     FormControlLabel,
+    Drawer,
+    List,
+    ListItem,
+    ListItemIcon,
+    ListItemText,
+    Alert,
+    Button,
 } from '@mui/material';
 import {
     Videocam,
@@ -37,20 +45,26 @@ import {
     Pause,
     PlayArrow,
     Event,
+    Settings,
+    Close,
+    Timeline,
 } from '@mui/icons-material';
-import api from '../services/api';
+import { cameraAPI, eventAPI, crossCameraAPI, systemAPI } from '../services/api';
 
 function SurveillanceDashboard() {
     const [cameras, setCameras] = useState([]);
     const [events, setEvents] = useState([]);
     const [liveMode, setLiveMode] = useState(true);
     const [selectedCamera, setSelectedCamera] = useState(null);
+    const [crossCameraTargets, setCrossCameraTargets] = useState([]);
+    const [crossCameraStats, setCrossCameraStats] = useState(null);
     const [stats, setStats] = useState({
         activeCameras: 0,
         totalEvents: 0,
         highPriority: 0,
         aiStatus: 'online',
     });
+    const [drawerOpen, setDrawerOpen] = useState(false);
 
     useEffect(() => {
         fetchData();
@@ -58,22 +72,57 @@ function SurveillanceDashboard() {
         return () => clearInterval(interval);
     }, [liveMode]);
 
+    useEffect(() => {
+        fetchCrossCameraData();
+        const interval = setInterval(fetchCrossCameraData, 10000);
+        return () => clearInterval(interval);
+    }, []);
+
     const fetchData = async () => {
         try {
-            const camRes = await api.get('/api/v1/cameras');
-            setCameras(camRes.data || []);
+            const camRes = await cameraAPI.getAll();
+            setCameras(camRes.data?.cameras || []);
             
-            const eventRes = await api.get('/api/v1/events?limit=10');
-            setEvents(eventRes.data || []);
+            const eventRes = await eventAPI.getAll({ limit: 10 });
+            setEvents(eventRes.data?.events || []);
             
             setStats({
-                activeCameras: camRes.data?.filter(c => c.status === 'online').length || 0,
-                totalEvents: eventRes.data?.length || 0,
-                highPriority: eventRes.data?.filter(e => e.priority === 'high').length || 0,
+                activeCameras: camRes.data?.cameras?.filter(c => c.status === 'online').length || 0,
+                totalEvents: eventRes.data?.events?.length || 0,
+                highPriority: eventRes.data?.events?.filter(e => e.priority === 'high').length || 0,
                 aiStatus: 'online',
             });
         } catch (error) {
             setStats(prev => ({ ...prev, aiStatus: 'offline' }));
+        }
+    };
+
+    const fetchCrossCameraData = async () => {
+        try {
+            const targetsRes = await crossCameraAPI.getTargets();
+            setCrossCameraTargets(targetsRes.data?.targets || {});
+            
+            const statsRes = await crossCameraAPI.getTracks();
+            setCrossCameraStats(statsRes.data);
+        } catch (err) {
+            console.warn('Failed to fetch cross-camera data');
+        }
+    };
+
+    const handleFullscreen = (camera) => {
+        setSelectedCamera(camera);
+    };
+
+    const handleCloseFullscreen = () => {
+        setSelectedCamera(null);
+    };
+
+    const handleStopTarget = async (personId) => {
+        try {
+            await crossCameraAPI.deleteTarget(personId);
+            fetchCrossCameraData();
+        } catch (err) {
+            console.error('Failed to stop target');
         }
     };
 
@@ -90,6 +139,14 @@ function SurveillanceDashboard() {
             case 'high': return 'error';
             case 'medium': return 'warning';
             default: return 'info';
+        }
+    };
+
+    const getPriorityBg = (priority) => {
+        switch (priority) {
+            case 'high': return 'rgba(255, 82, 82, 0.1)';
+            case 'medium': return 'rgba(255, 152, 0, 0.1)';
+            default: return 'rgba(0, 188, 212, 0.1)';
         }
     };
 
@@ -120,6 +177,11 @@ function SurveillanceDashboard() {
                     <Tooltip title="Refresh Data">
                         <IconButton onClick={fetchData} sx={{ color: 'primary.main' }}>
                             <Refresh />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Cross-Camera Targets">
+                        <IconButton onClick={() => setDrawerOpen(true)} sx={{ color: 'primary.main' }}>
+                            <People />
                         </IconButton>
                     </Tooltip>
                     <Chip
@@ -206,6 +268,42 @@ function SurveillanceDashboard() {
                 </Grid>
             </Grid>
 
+            {/* Cross-Camera Stats */}
+            {crossCameraStats && (
+                <Grid container spacing={2} sx={{ mb: 3 }}>
+                    <Grid item xs={12} md={4}>
+                        <Paper sx={{ p: 2, bgcolor: 'rgba(156, 39, 176, 0.1)' }}>
+                            <Typography variant="subtitle2" color="secondary.main">
+                                Cross-Camera Tracks
+                            </Typography>
+                            <Typography variant="h5">
+                                {crossCameraStats.active_tracks || 0} active
+                            </Typography>
+                        </Paper>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                        <Paper sx={{ p: 2, bgcolor: 'rgba(255, 82, 82, 0.1)' }}>
+                            <Typography variant="subtitle2" color="error.main">
+                                Match Success Rate
+                            </Typography>
+                            <Typography variant="h5">
+                                {crossCameraStats.matching_stats?.match_success_rate || 0}%
+                            </Typography>
+                        </Paper>
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                        <Paper sx={{ p: 2, bgcolor: 'rgba(0, 188, 212, 0.1)' }}>
+                            <Typography variant="subtitle2" color="primary.main">
+                                Cameras in Network
+                            </Typography>
+                            <Typography variant="h5">
+                                {crossCameraStats.cameras_in_graph || 0} connected
+                            </Typography>
+                        </Paper>
+                    </Grid>
+                </Grid>
+            )}
+
             {/* Main Content */}
             <Box sx={{ display: 'flex', gap: 2, height: 'calc(100vh - 250px)' }}>
                 {/* Camera Grid */}
@@ -219,6 +317,11 @@ function SurveillanceDashboard() {
                                     bgcolor: 'black',
                                     aspectRatio: '16/9',
                                     overflow: 'hidden',
+                                    cursor: 'pointer',
+                                    transition: 'transform 0.2s',
+                                    '&:hover': {
+                                        transform: 'scale(1.02)',
+                                    }
                                 }}>
                                     <Box sx={{ 
                                         position: 'absolute',
@@ -231,6 +334,22 @@ function SurveillanceDashboard() {
                                             label={camera.status.toUpperCase()}
                                             color={getStatusColor(camera.status)}
                                         />
+                                    </Box>
+                                    <Box sx={{ 
+                                        position: 'absolute',
+                                        top: 8,
+                                        right: 8,
+                                        zIndex: 1,
+                                    }}>
+                                        <Tooltip title="Fullscreen">
+                                            <IconButton 
+                                                size="small" 
+                                                onClick={() => handleFullscreen(camera)}
+                                                sx={{ color: 'white', bgcolor: 'rgba(0,0,0,0.5)' }}
+                                            >
+                                                <Fullscreen />
+                                            </IconButton>
+                                        </Tooltip>
                                     </Box>
                                     <Box sx={{ 
                                         display: 'flex',
@@ -277,16 +396,23 @@ function SurveillanceDashboard() {
                                         mb: 1, 
                                         p: 1.5, 
                                         borderRadius: 1,
-                                        bgcolor: 'rgba(255,255,255,0.03)',
+                                        bgcolor: getPriorityBg(event.priority),
                                         borderLeft: `3px solid ${getPriorityColor(event.priority)}.main`,
                                     }}>
-                                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                                            <Typography variant="subtitle2">{event.rule_type}</Typography>
+                                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                            <Box>
+                                                <Typography variant="subtitle2">{event.rule_type}</Typography>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    Camera {event.camera_id} • {event.timestamp}
+                                                </Typography>
+                                            </Box>
                                             <Chip size="small" label={event.priority} color={getPriorityColor(event.priority)} />
                                         </Box>
-                                        <Typography variant="caption" color="text.secondary">
-                                            Camera {event.camera_id} • {event.timestamp}
-                                        </Typography>
+                                        {event.details && (
+                                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                                                {JSON.stringify(event.details).substring(0, 100)}...
+                                            </Typography>
+                                        )}
                                     </Box>
                                 ))
                             )}
@@ -294,6 +420,83 @@ function SurveillanceDashboard() {
                     </Paper>
                 </Box>
             </Box>
+
+            {/* Fullscreen Camera Dialog */}
+            {selectedCamera && (
+                <Box sx={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    bgcolor: 'rgba(0,0,0,0.95)',
+                    zIndex: 9999,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                }}>
+                    <IconButton
+                        onClick={handleCloseFullscreen}
+                        sx={{ position: 'absolute', top: 16, right: 16, color: 'white' }}
+                    >
+                        <Close />
+                    </IconButton>
+                    <Paper sx={{ width: '90%', height: '80%', bgcolor: 'black' }}>
+                        <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <Typography variant="h6" color="white">{selectedCamera.name}</Typography>
+                            <Chip label={selectedCamera.status.toUpperCase()} color={getStatusColor(selectedCamera.status)} />
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 'calc(100% - 60px)' }}>
+                            <VideocamOff sx={{ fontSize: 80, opacity: 0.3 }} />
+                        </Box>
+                    </Paper>
+                </Box>
+            )}
+
+            {/* Cross-Camera Targets Drawer */}
+            <Drawer
+                anchor="right"
+                open={drawerOpen}
+                onClose={() => setDrawerOpen(false)}
+                PaperProps={{
+                    sx: { width: 350, bgcolor: 'background.paper' }
+                }}
+            >
+                <Box sx={{ p: 2 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Typography variant="h6">Cross-Camera Targets</Typography>
+                        <IconButton onClick={() => setDrawerOpen(false)}>
+                            <Close />
+                        </IconButton>
+                    </Box>
+                    
+                    {Object.keys(crossCameraTargets).length > 0 ? (
+                        <List>
+                            {Object.entries(crossCameraTargets).map(([personId, target]) => (
+                                <ListItem key={personId} secondaryAction={
+                                    <Tooltip title="Stop Tracking">
+                                        <IconButton edge="end" onClick={() => handleStopTarget(personId)}>
+                                            <Delete />
+                                        </IconButton>
+                                    </Tooltip>
+                                }>
+                                    <ListItemIcon>
+                                        <Timeline />
+                                    </ListItemIcon>
+                                    <ListItemText
+                                        primary={personId}
+                                        secondary={`Camera: ${target.last_camera} • Points: ${target.total_points || 0}`}
+                                    />
+                                </ListItem>
+                            ))}
+                        </List>
+                    ) : (
+                        <Typography color="text.secondary" textAlign="center" mt={4}>
+                            No active cross-camera targets
+                        </Typography>
+                    )}
+                </Box>
+            </Drawer>
         </Box>
     );
 }

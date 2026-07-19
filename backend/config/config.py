@@ -87,6 +87,14 @@ class KafkaConfig(BaseModel):
     port: int = 9092
 
 
+class CrossCameraTrackerConfig(BaseModel):
+    enabled: bool = True
+    similarity_threshold: float = 0.5
+    max_track_age_hours: int = 24
+    max_path_points: int = 100
+    enable_trajectory_prediction: bool = True
+
+
 class SpeedAnalysisConfig(BaseModel):
     enabled: bool = True
     calibration_factor: float = 0.05
@@ -127,6 +135,7 @@ class Config(BaseModel):
     reid: ReIDConfig = ReIDConfig()
     tracker: TrackerConfig = TrackerConfig()
     pose: PoseConfig = PoseConfig()
+    cross_camera_tracker: CrossCameraTrackerConfig = CrossCameraTrackerConfig()
     speed_analysis: SpeedAnalysisConfig = SpeedAnalysisConfig()
     height_analysis: HeightAnalysisConfig = HeightAnalysisConfig()
     mqtt: MQTTConfig = MQTTConfig()

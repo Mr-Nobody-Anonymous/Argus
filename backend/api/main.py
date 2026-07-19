@@ -37,6 +37,7 @@ from backend.services.license_plate_recognition import get_license_plate_recogni
 from backend.services.anomaly_detector import get_anomaly_detector
 from backend.services.pose_estimator import get_pose_estimator
 from backend.services.deep_tracker import get_deep_tracker
+from backend.services.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
 from backend.database.db import get_db, close_db
 from backend.config.config import get_config
 
@@ -605,6 +606,150 @@ async def get_webcam_status():
         }
     except Exception as e:
         logger.error(f"Error getting webcam status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Cross-Camera Tracker Endpoints ====================
+
+@app.get("/api/v1/cross-camera/tracks", response_model=dict)
+async def get_cross_camera_tracks():
+    """Get all active cross-camera tracks"""
+    try:
+        tracker = get_cross_camera_tracker()
+        return tracker.get_tracking_summary()
+    except Exception as e:
+        logger.error(f"Error getting cross-camera tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cross-camera/targets", response_model=dict)
+async def get_cross_camera_targets():
+    """Get all currently targeted persons"""
+    try:
+        tracker = get_cross_camera_tracker()
+        return {"targets": tracker.get_targeted_persons()}
+    except Exception as e:
+        logger.error(f"Error getting cross-camera targets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cross-camera/target", response_model=dict)
+async def create_cross_camera_target(person_id: str = Form(...), camera_id: int = Form(...), reason: str = Form("")):
+    """Start targeted tracking for a person across cameras"""
+    try:
+        tracker = get_cross_camera_tracker()
+        global_track_id = tracker.set_target(person_id, camera_id, reason)
+        return {"global_track_id": global_track_id, "status": "started"}
+    except Exception as e:
+        logger.error(f"Error creating cross-camera target: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/cross-camera/target/{person_id}")
+async def delete_cross_camera_target(person_id: str):
+    """Stop targeted tracking for a person"""
+    try:
+        tracker = get_cross_camera_tracker()
+        tracker.stop_target(person_id)
+        return {"status": "stopped"}
+    except Exception as e:
+        logger.error(f"Error deleting cross-camera target: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cross-camera/path/{person_id}", response_model=dict)
+async def get_cross_camera_path(person_id: str):
+    """Get tracking path for a specific person"""
+    try:
+        tracker = get_cross_camera_tracker()
+        path = tracker.get_tracking_path(person_id)
+        return {"person_id": person_id, "path": path}
+    except Exception as e:
+        logger.error(f"Error getting cross-camera path: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cross-camera/predict/{person_id}", response_model=dict)
+async def predict_person_trajectory(person_id: str, horizon_seconds: int = Query(30)):
+    """Predict future trajectory for a tracked person"""
+    try:
+        tracker = get_cross_camera_tracker()
+        prediction = tracker.get_trajectory_prediction(person_id, horizon_seconds)
+        if prediction:
+            return prediction
+        return {"person_id": person_id, "prediction": None, "message": "Insufficient data for prediction"}
+    except Exception as e:
+        logger.error(f"Error predicting trajectory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cross-camera/graph", response_model=dict)
+async def get_camera_graph():
+    """Get camera adjacency graph"""
+    try:
+        tracker = get_cross_camera_tracker()
+        return {"camera_graph": tracker.camera_graph}
+    except Exception as e:
+        logger.error(f"Error getting camera graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cross-camera/graph", response_model=dict)
+async def set_camera_graph(graph: dict):
+    """Set camera adjacency graph"""
+    try:
+        tracker = get_cross_camera_tracker()
+        tracker.set_camera_graph(graph)
+        return {"status": "updated", "camera_count": len(graph)}
+    except Exception as e:
+        logger.error(f"Error setting camera graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cross-camera/clear-old", response_model=dict)
+async def clear_old_tracks(max_age_hours: int = Query(24)):
+    """Clear tracks older than specified hours"""
+    try:
+        tracker = get_cross_camera_tracker()
+        count = tracker.clear_old_tracks(max_age_hours)
+        return {"status": "cleared", "removed_tracks": count}
+    except Exception as e:
+        logger.error(f"Error clearing old tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/stats/learning", response_model=dict)
+async def get_learning_stats():
+    """Get learning statistics including behavior profiles and track analysis"""
+    try:
+        tracker = get_cross_camera_tracker()
+        anomaly = get_anomaly_detector()
+        
+        # Get cross-camera tracking stats
+        tracker_stats = tracker.get_tracker_statistics()
+        
+        stats = {
+            "total_behavior_profiles": tracker_stats.get('total_tracked', 0),
+            "total_emotion_baselines": len(get_face_recognition().get_known_faces_list()),
+            "learning_buffer_size": tracker_stats.get('active_tracks', 0),
+            "sklearn_available": SKLEARN_AVAILABLE,
+            "cross_camera_stats": tracker_stats,
+            "anomaly_stats": {
+                "enabled": anomaly.enabled,
+                "pattern_history_size": len(anomaly.pattern_history) if hasattr(anomaly, 'pattern_history') else 0
+            },
+            "features": {
+                "behavior_pattern_learning": True,
+                "emotion_recognition": True,
+                "trajectory_prediction": True,
+                "cross_camera_tracking": True,
+                "clustering": True
+            }
+        }
+        
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting learning stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

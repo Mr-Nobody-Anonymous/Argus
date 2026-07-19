@@ -39,4 +39,30 @@ export const systemAPI = {
     metrics: () => api.get('/metrics'),
 };
 
+// Cross-Camera Tracker API
+export const crossCameraAPI = {
+    getTracks: () => api.get('/cross-camera/tracks'),
+    getTargets: () => api.get('/cross-camera/targets'),
+    setTarget: (person_id, camera_id, reason) => {
+        const formData = new FormData();
+        formData.append('person_id', person_id);
+        formData.append('camera_id', camera_id);
+        formData.append('reason', reason || '');
+        return api.post('/cross-camera/target', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+        });
+    },
+    deleteTarget: (person_id) => api.delete(`/cross-camera/target/${person_id}`),
+    getPath: (person_id) => api.get(`/cross-camera/path/${person_id}`),
+    predictTrajectory: (person_id, horizon_seconds) => api.get(`/cross-camera/predict/${person_id}`, { params: { horizon_seconds } }),
+    getGraph: () => api.get('/cross-camera/graph'),
+    setGraph: (graph) => api.post('/cross-camera/graph', graph),
+    clearOldTracks: (max_age_hours) => api.post('/cross-camera/clear-old', { max_age_hours }),
+};
+
+// Learning stats API
+export const learningAPI = {
+    getStats: () => api.get('/stats/learning'),
+};
+
 export default api;

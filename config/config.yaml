@@ -5,6 +5,14 @@ system:
   log_level: INFO
   snapshot_dir: data/snapshots
 
+# Cross-Camera Tracking Configuration
+cross_camera_tracker:
+  enabled: true
+  similarity_threshold: 0.5
+  max_track_age_hours: 24
+  max_path_points: 100
+  enable_trajectory_prediction: true
+
 inference:
   model: yolov8n.pt
   confidence_threshold: 0.5

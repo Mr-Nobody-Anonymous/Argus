@@ -13,6 +13,9 @@ services:
       - ./config:/app/config
     environment:
       - PYTHONUNBUFFERED=1
+    depends_on:
+      - mqtt
+      - qdrant
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/v1/health')"]
       interval: 30s
@@ -71,9 +74,13 @@ services:
       - "9092:9092"
       - "9093:9093"
     environment:
-      - KAFKA_CFG_PROCESS_ROLS=- 1
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CFG_PROCESS_ROLES=1
+      - KAFKA_CFG_CONTROLLER_LISTENERS=CONTROLLER://:9093
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
       - KAFKA_HEAP_OPTS=-Xmx512m -Xms512m
     volumes:
       - ./data/kafka:/bitnami/kafka
