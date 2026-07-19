@@ -1,13 +1,13 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="200"/>
+</p>
+
 <h1 align="center">
   👁️ Argus - AI Video Analytics Platform
 </h1>
 
 <p align="center">
 ![GitHub Repo stars](https://img.shields.io/github/stars/Mr-Nobody-Anonymous/Argus?style=social) ![License](https://img.shields.io/github/license/Mr-Nobody-Anonymous/Argus?color=blue) ![Issues](https://img.shields.io/github/issues/Mr-Nobody-Anonymous/Argus?color=red) ![Last Commit](https://img.shields.io/github/last-commit/Mr-Nobody-Anonymous/Argus?color=green)
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="150"/>
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 **Metaphorical meaning:** Because the giant had a hundred eyes and was always watching, the term "Argus" in English is also used today to describe a watchful guardian or a highly observant person.
 
-A production-ready AI-powered video analytics platform for real-time CCTV monitoring with object detection, zone-based rules, cross-camera tracking, and advanced criminal activity prediction. Supports up to **100+ cameras** with pagination.
+A production-ready AI-powered video analytics platform for real-time CCTV monitoring with object detection, zone-based rules, cross-camera tracking, and advanced criminal activity prediction.
 
 ## 🌟 Features
 
@@ -28,7 +28,7 @@ A production-ready AI-powered video analytics platform for real-time CCTV monito
 
 ### Core Capabilities
 
-- **Multi-Camera Support**: Manage up to 100+ concurrent RTSP camera streams
+- **Multi-Camera Support**: Manage up to 4 concurrent RTSP camera streams
 - **Real-Time Object Detection**: YOLOv8-powered person and vehicle detection
 - **License Plate Recognition (LPR)**: Automatic license plate detection and OCR using PaddleOCR
 - **Zone-Based Rules**: Define polygon/rectangle zones with custom rules
