@@ -161,7 +161,7 @@ function SurveillanceDashboard() {
                         WebkitBackgroundClip: 'text',
                         WebkitTextFillColor: 'transparent',
                     }}>
-                        SentinelSight Command Center
+                        Argus Command Center
                     </Typography>
                     <Typography variant="subtitle1" color="text.secondary">
                         AI-Powered Video Surveillance & Analytics

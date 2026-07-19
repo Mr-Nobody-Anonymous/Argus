@@ -1,5 +1,5 @@
 """
-Configuration management for SentinelSight
+Configuration management for Argus
 """
 import yaml
 from pathlib import Path
@@ -110,12 +110,12 @@ class MQTTConfig(BaseModel):
     enabled: bool = True
     broker: str = "localhost"
     port: int = 1883
-    topic_prefix: str = "sentinelsight"
+    topic_prefix: str = "argus"
     qos: int = 1
 
 
 class DatabaseConfig(BaseModel):
-    url: str = "sqlite:///../data/sentinelsight.db"
+    url: str = "sqlite:///../data/argus.db"
 
 
 class RuleConfig(BaseModel):

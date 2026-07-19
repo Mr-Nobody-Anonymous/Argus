@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 echo ===================================
-echo Starting SentinelSight AI Platform
+echo Starting Argus AI Platform
 echo ===================================
 
 REM Check if venv exists
@@ -23,10 +23,10 @@ if not exist "frontend\node_modules" (
 )
 
 echo 1. Starting Backend Server (port 8000)...
-start "SentinelSight Backend" cmd /k "venv\Scripts\activate && python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
+start "Argus Backend" cmd /k "venv\Scripts\activate && python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
 
 echo 2. Starting Frontend Dashboard (port 3000)...
-start "SentinelSight Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "Argus Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo ===================================
 echo System is starting up!

@@ -1,8 +1,8 @@
-# Research & Best Practices - SentinelSight
+# Research & Best Practices - Argus
 
 ## Executive Summary
 
-This document outlines the research conducted on 4 leading video management and analytics platforms, the features adopted from each, and the rationale behind architectural decisions for SentinelSight.
+This document outlines the research conducted on 4 leading video management and analytics platforms, the features adopted from each, and the rationale behind architectural decisions for Argus.
 
 ---
 
@@ -19,7 +19,7 @@ This document outlines the research conducted on 4 leading video management and 
 - Multi-stream support per camera (different resolutions/framerates)
 - Logical camera grouping and hierarchical organization
 
-**Features Adopted in SentinelSight**:
+**Features Adopted in Argus**:
 ✅ **Multi-site camera grouping**: Implemented via `location_tag` field (e.g., "Building A - Floor 1 - Entrance")
 ✅ **Universal RTSP driver**: OpenCV VideoCapture handles any RTSP-compatible camera
 ✅ **Modular architecture**: Separated services (ingestion, inference, rules, API)
@@ -47,7 +47,7 @@ This document outlines the research conducted on 4 leading video management and 
 - Dashboard customization for different user roles
 - Integration with external data sources (POS, access control)
 
-**Features Adopted in SentinelSight**:
+**Features Adopted in Argus**:
 ✅ **Review Module**: Event search with advanced filtering (camera, rule, time, priority)
 ✅ **Respond Module**: Real-time alerts with configurable rules (intrusion, loitering)
 ✅ **Research Module**: Analytics dashboard with trend charts and heatmaps
@@ -76,7 +76,7 @@ This document outlines the research conducted on 4 leading video management and 
 - Generative AI for natural language alert definitions
 - Visual alerts (define complex events via text prompts)
 
-**Features Adopted in SentinelSight**:
+**Features Adopted in Argus**:
 ✅ **Color-coded priorities**: Critical (red), High (orange), Medium (blue), Low (gray)
 ✅ **Timeline-style event feed**: Chronological list with filtering
 ✅ **Event jump navigation**: Click event to view details instantly
@@ -105,7 +105,7 @@ This document outlines the research conducted on 4 leading video management and 
 - Config-driven rules (YAML)
 - Clip recording with pre/post event buffers
 
-**Features Adopted in SentinelSight**:
+**Features Adopted in Argus**:
 ✅ **Local-only processing**: All inference happens on-premise, no cloud uploads
 ✅ **MQTT event publishing**: Publish events to topics for external integrations
 ✅ **Polygon zone support**: Shapely library for point-in-polygon checking
@@ -126,8 +126,8 @@ This document outlines the research conducted on 4 leading video management and 
 
 ## Feature Comparison Matrix
 
-| Feature | Milestone | BriefCam | Avigilon | Frigate | SentinelSight |
-|---------|-----------|----------|----------|---------|---------------|
+| Feature | Milestone | BriefCam | Avigilon | Frigate | Argus |
+|---------|-----------|----------|----------|---------|-------|
 | Multi-site management | ✅ | ✅ | ✅ | ❌ | ✅ (tags) |
 | Event-centric storage | ❌ | ✅ | ❌ | ✅ | ✅ |
 | Priority-based alerts | ❌ | ✅ | ✅ | ❌ | ✅ |
@@ -199,8 +199,8 @@ This document outlines the research conducted on 4 leading video management and 
 
 **Topic Structure**:
 ```
-sentinelsight/events/{camera_id}/{rule_type}
-sentinelsight/status/{camera_id}
+argus/events/{camera_id}/{rule_type}
+argus/status/{camera_id}
 ```
 
 ---
@@ -257,7 +257,7 @@ sentinelsight/status/{camera_id}
 
 ## Conclusion
 
-SentinelSight combines the best practices from 4 industry leaders:
+Argus combines the best practices from 4 industry leaders:
 - **Milestone's** enterprise-grade architecture
 - **BriefCam's** analytics-driven workflows
 - **Avigilon's** attention management

@@ -1,8 +1,8 @@
 """
-Database schema and initialization for SentinelSight
+Database schema and initialization for Argus
 """
 
-# cspell:words rtsp sentinelsight
+# cspell:words rtsp argus
 import sqlite3
 import threading
 from pathlib import Path
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self, db_path: str = "data/sentinelsight.db"):
+    def __init__(self, db_path: str = "data/argus.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = None

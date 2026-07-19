@@ -52,11 +52,11 @@ mqtt:
   enabled: true
   broker: localhost
   port: 1883
-  topic_prefix: sentinelsight
+  topic_prefix: argus
   qos: 1
 
 database:
-  url: sqlite:///data/sentinelsight.db
+  url: sqlite:///data/argus.db
 
 # Example camera configurations (can be managed via API)
 cameras: []

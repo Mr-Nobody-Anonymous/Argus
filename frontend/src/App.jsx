@@ -21,7 +21,7 @@ import {
     Videocam,
     Event,
     Analytics,
-    Shields,
+    Shield,
     Psychology,
     People,
     Radar,
@@ -104,10 +104,10 @@ function Shell() {
             <AppBar position="fixed" sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}>
                 <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
                     <Typography variant="h6" noWrap component="div">
-                        SentinelSight
+                        Argus
                     </Typography>
                     <Chip
-                        icon={<Shields />}
+                        icon={<Shield />}
                         label="AI Video Analytics"
                         color="secondary"
                         variant="outlined"

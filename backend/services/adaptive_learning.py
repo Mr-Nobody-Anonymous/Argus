@@ -1,5 +1,5 @@
 """
-Adaptive Learning Service for SentinelSight
+Adaptive Learning Service for Argus
 Self-learning behavior patterns, emotion recognition, and anomaly detection
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# SentinelSight - Demo Script (3-5 Minutes)
+# Argus - Demo Script (3-5 Minutes)
 
 ## Preparation (Before Demo)
 
@@ -17,7 +17,7 @@
 
 ### **Minute 0:00 - 0:30: Introduction**
 
-**Say**: "SentinelSight is an AI-powered video analytics platform that monitors CCTV cameras in real-time, detects intrusions and loitering, and generates intelligent alerts."
+**Say**: "Argus is an AI-powered video analytics platform that monitors CCTV cameras in real-time, detects intrusions and loitering, and generates intelligent alerts."
 
 **Show**: 
 - Navigate to http://localhost:3000

@@ -1,5 +1,5 @@
 """
-SentinelSight Backend Services
+Argus Backend Services
 
 Integrated features from forked repositories:
 - ultralytics: YOLOv8 object detection (inference_engine.py)

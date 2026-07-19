@@ -1,10 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
-REM SentinelSight Webcam Tester Launcher
+REM Argus Webcam Tester Launcher
 REM This script runs the backend with PC webcam for testing face recognition, emotion detection, etc.
 
 echo ============================================
-echo SentinelSight Webcam Tester
+echo Argus Webcam Tester
 echo ============================================
 echo.
 

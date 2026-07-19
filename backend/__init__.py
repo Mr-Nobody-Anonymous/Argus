@@ -1,3 +1,3 @@
 """
-SentinelSight Backend Package
+Argus Backend Package
 """

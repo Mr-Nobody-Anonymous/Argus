@@ -1,5 +1,5 @@
 """
-Main FastAPI application for SentinelSight
+Main FastAPI application for Argus
 """
 import logging
 import sys
@@ -55,7 +55,7 @@ startup_time = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle management"""
-    logger.info("Starting SentinelSight API...")
+    logger.info("Starting Argus API...")
     
     # Initialize database
     get_db()
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    logger.info("Shutting down SentinelSight API...")
+    logger.info("Shutting down Argus API...")
     coordinator.stop_all_cameras()
     get_mqtt_publisher().disconnect()
     close_db()

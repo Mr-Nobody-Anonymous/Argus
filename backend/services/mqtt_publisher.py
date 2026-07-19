@@ -63,7 +63,7 @@ class MQTTPublisher:
             camera_id = event.get('camera_id')
             rule_type = event.get('rule_type')
             
-            # Topic: sentinelsight/events/{camera_id}/{rule_type}
+            # Topic: argus/events/{camera_id}/{rule_type}
             topic = f"{self.config.mqtt.topic_prefix}/events/{camera_id}/{rule_type}"
             
             # Payload

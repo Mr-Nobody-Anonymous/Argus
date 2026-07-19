@@ -1,5 +1,5 @@
 """
-Pydantic models for SentinelSight API
+Pydantic models for Argus API
 """
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backend.database.db import get_db, close_db
 
 print("=" * 50)
-print("Initializing SentinelSight Database...")
+print("Initializing Argus Database...")
 print("=" * 50)
 
 try:
