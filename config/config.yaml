@@ -1,0 +1,123 @@
+system:
+  fps_target: 15
+  max_cameras: 4
+  snapshot_retention_days: 30
+  log_level: INFO
+  snapshot_dir: data/snapshots
+
+inference:
+  model: yolov8n.pt
+  confidence_threshold: 0.5
+  device: cpu
+  classes: []  # Empty = detect all classes (person, car, animals, etc.)
+
+# Image Enhancement Configuration
+enhancement:
+  enabled: true
+  auto_enhance: true
+  low_light_enhancement: true
+  denoise: true
+  sharpen: true
+  night_vision: false
+  deblur: true
+  hdr: false
+
+# Face Recognition Configuration
+face_recognition:
+  enabled: true  # Set to true to enable face detection/recognition
+  confidence_threshold: 0.6
+  model_path: models/face_recognition
+  max_faces_per_frame: 10
+
+# Speed Analysis Configuration
+speed_analysis:
+  enabled: true
+  calibration_factor: 0.05  # meters per pixel at reference distance
+  reference_distance_m: 10.0
+
+# Height Analysis Configuration
+height_analysis:
+  enabled: true
+  avg_person_height_m: 1.7
+
+mqtt:
+  enabled: true
+  broker: localhost
+  port: 1883
+  topic_prefix: sentinelsight
+  qos: 1
+
+database:
+  url: sqlite:///data/sentinelsight.db
+
+# Example camera configurations (can be managed via API)
+cameras: []
+
+# License Plate Recognition Configuration
+license_plate:
+  enabled: true
+  region: us  # us, eu, uk
+  min_confidence: 0.6
+
+# Anomaly Detection Configuration
+anomaly:
+  enabled: true
+  sensitivity: 0.7
+  window_size: 100
+
+# Person Re-identification Configuration
+reid:
+  enabled: false
+  similarity_threshold: 0.7
+  feature_dim: 2048
+
+# Deep Tracker Configuration
+tracker:
+  enabled: true
+  algorithm: bytetrack  # deepsort, botsort, bytetrack
+  track_buffer: 30
+  match_threshold: 0.6
+
+# Pose Estimation Configuration
+pose:
+  enabled: true
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+
+# Qdrant Vector Database Configuration
+qdrant:
+  enabled: true
+  host: localhost
+  port: 6333
+
+# Kafka Configuration
+kafka:
+  enabled: false
+  host: localhost
+  port: 9092
+
+# Rule configurations
+rules:
+  intrusion:
+    enabled: true
+    priority: high
+    description: "Person/vehicle enters restricted zone"
+  loitering:
+    enabled: true
+    threshold_seconds: 30
+    priority: medium
+    description: "Person remains in zone > 30 seconds"
+  speed_violation:
+    enabled: true
+    threshold_kmh: 30
+    priority: high
+    description: "Vehicle exceeds speed threshold"
+  fall_detection:
+    enabled: true
+    priority: high
+    description: "Person fall detected via pose estimation"
+  abandoned_object:
+    enabled: true
+    threshold_seconds: 60
+    priority: medium
+    description: "Stationary object detected"

@@ -1,0 +1,49 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+opencv-python==4.9.0.80
+opencv-contrib-python==4.9.0.80
+ultralytics==8.1.11
+torch==2.1.2
+torchvision==0.16.2
+numpy==1.24.3
+Pillow==10.2.0
+shapely==2.0.2
+paho-mqtt==1.6.1
+pyyaml==6.0.1
+python-dateutil==2.8.2
+psutil==5.9.8
+pytest==7.4.4
+pytest-asyncio==0.23.3
+httpx==0.26.0
+black==24.1.1
+pylint==3.0.3
+scipy==1.12.0
+scikit-image==0.22.0
+insightface==0.7.3
+onnxruntime==1.16.3
+
+# Emotion detection (facial expression analysis)
+deepface==0.0.94
+gdown==0.0.7
+urllib3==3.0.1
+
+# License Plate Recognition & OCR
+paddleocr==2.7.1
+paddlepaddle==2.6.2
+
+# Anomaly Detection
+anomalib==1.2.0
+
+# Pose Estimation
+mediapipe==0.10.14
+
+# Video Understanding
+pytorchvideo==0.1.5
+
+# Advanced Anomaly Detection & Trajectory Prediction
+scikit-learn==1.12.0  # For trajectory clustering and prediction
+statsmodels==0.14.0   # For ARMA/ARIMA time series prediction
+torchmetrics==1.2.0   # For deep anomaly model evaluation
