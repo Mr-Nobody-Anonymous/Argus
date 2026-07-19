@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="120"/>
+  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="200"/>
 </p>
 
 <h1 align="center">
@@ -7,17 +7,15 @@
 </h1>
 
 <p align="center">
-  <a href="https://github.com/Mr-Nobody-Anonymous/Argus/stargazers">![GitHub Repo stars](https://img.shields.io/github/stars/Mr-Nobody-Anonymous/Argus?style=social)</a>
-  <a href="https://github.com/Mr-Nobody-Anonymous/Argus/blob/main/LICENSE">![License](https://img.shields.io/github/license/Mr-Nobody-Anonymous/Argus?color=blue)</a>
-  <a href="https://github.com/Mr-Nobody-Anonymous/Argus/issues">![Issues](https://img.shields.io/github/issues/Mr-Nobody-Anonymous/Argus?color=red)</a>
-  <a href="https://github.com/Mr-Nobody-Anonymous/Argus/commits/main">![Last Commit](https://img.shields.io/github/last-commit/Mr-Nobody-Anonymous/Argus?color=green)</a>
+
+![GitHub Repo stars](https://img.shields.io/github/stars/Mr-Nobody-Anonymous/Argus?style=social) ![License](https://img.shields.io/github/license/Mr-Nobody-Anonymous/Argus?color=blue) ![Issues](https://img.shields.io/github/issues/Mr-Nobody-Anonymous/Argus?color=red) ![Last Commit](https://img.shields.io/github/last-commit/Mr-Nobody-Anonymous/Argus?color=green)
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quickstart</a> | 
-  <a href="#features">Features</a> | 
-  <a href="#api-reference">API</a> | 
-  <a href="#testing">Testing</a> | 
+  <a href="#quick-start">Quickstart</a> • 
+  <a href="#features">Features</a> • 
+  <a href="#api-reference">API</a> • 
+  <a href="#testing">Testing</a> • 
   <a href="#troubleshooting">FAQ</a>
 </p>
 
