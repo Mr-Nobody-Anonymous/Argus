@@ -1,10 +1,12 @@
-# 🛡️ SentinelSight - AI Video Analytics Platform
+# 👁️ Argus - AI Video Analytics Platform
 
-A production-ready AI-powered video analytics platform for real-time CCTV monitoring with object detection, zone-based rules, and event management.
+**Metaphorical meaning:** Because the giant had a hundred eyes and was always watching, the term "Argus" in English is also used today to describe a watchful guardian or a highly observant person.
+
+A production-ready AI-powered video analytics platform for real-time CCTV monitoring with object detection, zone-based rules, cross-camera tracking, and advanced criminal activity prediction.
 
 ## 🌟 Features
 
-<!-- cspell:ignore venv uvicorn wowzaec streamlock yolov cuda mosquitto sentinelsight Ultralytics Avigilon Saimax -->
+<!-- cspell:ignore venv uvicorn wowzaec streamlock yolov cuda mosquitto argus Ultralytics Avigilon Saimax -->
 
 ### Core Capabilities
 
@@ -13,6 +15,7 @@ A production-ready AI-powered video analytics platform for real-time CCTV monito
 - **License Plate Recognition (LPR)**: Automatic license plate detection and OCR using PaddleOCR
 - **Zone-Based Rules**: Define polygon/rectangle zones with custom rules
 - **Event Generation**: Intrusion, loitering, speed violation, and fall detection
+- **Cross-Camera Tracking**: Track persons across multiple camera views with trajectory prediction
 - **Web Dashboard**: Modern React UI with real-time updates
 - **Analytics**: Event trends, heatmaps, and performance metrics
 - **MQTT Integration**: Publish events for smart home/automation systems
@@ -26,6 +29,7 @@ A production-ready AI-powered video analytics platform for real-time CCTV monito
 - **Speed Analysis**: Velocity estimation and categorization (km/h, direction)
 - **Height Analysis**: Real-world height estimation and classification
 - **Image Enhancement**: CLAHE, denoise, sharpen, night vision, deblur, HDR
+- **Criminal Activity Prediction**: Proactive security alerts based on behavior patterns
 
 ### 🔧 Infrastructure Features
 
@@ -38,6 +42,8 @@ A production-ready AI-powered video analytics platform for real-time CCTV monito
 - ✅ Frame queue management (prevents memory overflow)
 - ✅ Event deduplication (5-second window)
 - ✅ Performance monitoring (FPS, latency, queue depth)
+- ✅ Cross-camera person matching with ReID features
+- ✅ Trajectory clustering and prediction
 - ✅ Privacy-first (local processing, no cloud)
 - ✅ GDPR-friendly (events + snapshots only, configurable retention)
 - ✅ Docker deployment with health checks
@@ -107,7 +113,7 @@ The YOLO model will be downloaded automatically on first run. This may take a fe
 2. Click "Add Camera"
 3. Enter:
    - **Name**: Front Entrance
-   <!-- cspell:ignore RTSP -->
+   - <!-- cspell:ignore RTSP -->
    - **RTSP URL**: `rtsp://your-camera-url`
    - **Location Tag**: Building A - Floor 1 (optional)
 4. Click "Add"
@@ -225,6 +231,16 @@ mqtt:
 - `PUT /api/v1/zones/{id}` - Update zone
 - `DELETE /api/v1/zones/{id}` - Delete zone
 
+### Cross-Camera Tracking Endpoints
+
+- `GET /api/v1/cross-camera/tracks` - Get all active cross-camera tracks
+- `GET /api/v1/cross-camera/targets` - Get targeted persons
+- `POST /api/v1/cross-camera/target` - Start targeted tracking
+- `DELETE /api/v1/cross-camera/target/{id}` - Stop targeted tracking
+- `GET /api/v1/cross-camera/path/{id}` - Get tracking path
+- `GET /api/v1/cross-camera/predict/{id}` - Predict trajectory
+- `GET /api/v1/clusters` - Get trajectory clustering
+
 ### System Endpoints
 
 - `GET /api/v1/health` - System health check
@@ -270,6 +286,7 @@ curl -X POST http://localhost:8000/api/v1/webcam/stop
 - **Emotion Detection** (happy, sad, angry, surprised, etc.)
 - Speed & Height Analysis
 - Image Quality Assessment & Enhancement
+- Cross-Camera Tracking Simulation
 
 ### Manual Testing
 
@@ -293,6 +310,10 @@ curl "http://localhost:8000/api/v1/events?limit=10"
 
 # Get metrics
 curl http://localhost:8000/api/v1/metrics
+
+# Cross-camera tracking
+curl http://localhost:8000/api/v1/cross-camera/tracks
+curl http://localhost:8000/api/v1/clusters
 ```
 
 ---
@@ -322,17 +343,17 @@ curl http://localhost:8000/api/v1/metrics
 
 - Ensure Mosquitto container is running
 - Check MQTT broker address in config
-- Test with: `mosquitto_sub -h localhost -t "sentinelsight/#" -v`
+- Test with: `mosquitto_sub -h localhost -t "argus/#" -v`
 
 ---
 
 ## 📁 Project Structure
 
 ```
-sentinelsight/
+argus/
 ├── backend/
 │   ├── api/              # FastAPI application
-│   ├── services/         # Core services
+│   ├── services/         # Core services (including cross-camera tracker)
 │   ├── database/         # Database layer
 │   └── config/           # Configuration
 ├── frontend/
@@ -340,9 +361,10 @@ sentinelsight/
 │       ├── pages/        # React pages
 │       ├── components/   # React components
 │       └── services/     # API client
-├── config/               # YAML configuration
-├── data/                 # Database & snapshots
-├── docs/                 # Documentation
+├── config/              # YAML configuration
+├── data/              # Database & snapshots
+├── assets/            # Logo and static assets
+│   └── argus-logo.png # Argus watchful eye logo
 ├── docker-compose.yml
 └── README.md
 ```
@@ -373,7 +395,7 @@ sentinelsight/
 
 ---
 
-## 🎯 Criminal Activity & Anomaly Prediction
+## 🎯 Argus Prediction Engine
 
 ### Advanced Prediction Features
 
@@ -384,6 +406,7 @@ sentinelsight/
   - Casing behavior (systematic area scanning/recce)
 - **Group Behavior Analysis**: Detects coordinated suspicious activities between multiple persons
 - **Violence Prevention Patterns**: Fall detection and abnormal pose patterns
+- **Cross-Camera Prediction**: Predicts next camera a person will appear in
 
 ### Accessing Prediction Features
 
@@ -396,6 +419,9 @@ curl "http://localhost:8000/api/v1/predictions/suspicious?camera_id=1"
 
 # Get group behavior anomalies
 curl "http://localhost:8000/api/v1/predictions/group-behavior?camera_id=1"
+
+# Get cross-camera predictions
+curl "http://localhost:8000/api/v1/cross-camera/predict/{person_id}"
 ```
 
 ---
@@ -463,6 +489,7 @@ Access at http://localhost:3000
 - **Zones**: Define virtual boundaries for alerts
 - **Events**: Review and manage security alerts
 - **Analytics**: View system performance and statistics
+- **Cross-Camera Tracking**: Monitor persons across multiple cameras
 - **Faces**: Register known persons for face recognition
 - **Settings**: Configure system parameters
 
@@ -478,6 +505,7 @@ Access at http://localhost:3000
 | large_motion | Unusual motion pattern | medium |
 | erratic_movement | Suspicious erratic behavior | high |
 | suspicious_grouping | Multiple persons acting together | medium |
+| cross_camera_movement | Person tracked across cameras | medium |
 
 ---
 
@@ -513,26 +541,26 @@ cd frontend && npm run build
 
 ```bash
 # Create service file
-sudo nano /etc/systemd/system/sentinelsight.service
+sudo nano /etc/systemd/system/argus.service
 
 # Add content:
 [Unit]
-Description=SentinelSight AI Video Analytics
+Description=Argus AI Video Analytics
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/docker-compose -f /opt/sentinelsight/docker-compose.yml up
-WorkingDirectory=/opt/sentinelsight
+ExecStart=/usr/bin/docker-compose -f /opt/argus/docker-compose.yml up
+WorkingDirectory=/opt/argus
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 
 # Enable service
-sudo systemctl enable sentinelsight
-sudo systemctl start sentinelsight
+sudo systemctl enable argus
+sudo systemctl start argus
 ```
 
 ---
@@ -634,73 +662,6 @@ For issues or questions:
 1. Check troubleshooting section above
 2. Review logs: `docker-compose logs`
 3. Check API health: http://localhost:8000/api/v1/health
-
----
-
----
-
-## 📚 Integrated Repositories
-
-This project integrates features from the following open-source repositories:
-
-### 🎯 Video Analytics & Security
-- **SentinelSight_AI_Video_Analytics** (yogesh43221) - Original video analytics base
-- **License-Plate-Recognition-System** (ahmedshafiq12) - LPR algorithms
-- **Automatic-Number-Plate-Recognition-ANPR-Facial-Recognition-System-FRS** (Shenoy37) - Combined LPR/Face system
-- **License_plate_detection_and_image_enhancement** (Kernic) - LPR with enhancement
-- **Traffic-Management** (maheshmb13) - Traffic analytics patterns
-
-### 🔍 Object Detection & Tracking
-- **ultralytics/ultralytics** - YOLOv8 object detection
-- **open-mmlab/mmdetection** - Additional detection models
-- **nwojke/deep_sort** - Deep SORT tracking
-- **NirAharon/BoT-SORT** - Boosted tracktor
-- **FoundationVision/ByteTrack** - Multi-object tracking
-
-### 👁️ Face Recognition & OCR
-- **deepinsight/insightface** - State-of-the-art face analysis
-- **ageitgey/face_recognition** - Face recognition
-- **PaddlePaddle/PaddleOCR** - OCR engine for license plates
-- **JaidedAI/EasyOCR** - Alternative OCR toolkit
-
-### 🏃 Pose Estimation & Action Recognition
-- **open-mmlab/mmpose** - Pose estimation
-- **CMU-Perceptual-Computing-Lab/openpose** - OpenPose
-- **facebookresearch/pytorchvideo** - Video understanding
-- **open-mmlab/mmaction2** - Action recognition
-
-### 🚨 Anomaly Detection
-- **open-edge-platform/anomalib** - Anomaly detection algorithms
-- **ekosman/AnomalyDetectionCVPR2018-Pytorch** - Video anomaly detection
-
-### 🔄 Image Enhancement & Restoration
-- **xinntao/Real-ESRGAN** - Super-resolution
-- **XPixelGroup/BasicSR** - Image restoration
-- **isl-org/MiDaS** - Depth estimation
-
-### 🚶 Person Re-identification
-- **KaiyangZhou/deep-person-reid** - Re-ID
-- **JDAI-CV/fast-reid** - Fast re-ID
-
-### 📊 Infrastructure
-- **grafana/grafana** - Dashboard visualization
-- **qdrant/qdrant** - Vector database
-- **elastic/elasticsearch** - Search engine
-- **milvus-io/milvus** - Vector database
-- **apache/kafka** - Event streaming
-- **rabbitmq/rabbitmq-server** - Message broker
-- **FFmpeg/FFmpeg** - Media processing
-- **bluenviron/mediamtx** - Media server
-- **opencv/opencv** - Computer vision
-- **facebookresearch/faiss** - Similarity search
-
-### 🌍 Geospatial & Frontend
-- **openlayers/openlayers** - Map library
-- **Leaflet/Leaflet** - Interactive maps
-- **fastapi/fastapi** - Python web framework
-
-### 🙏 Original Inspiration
-- **Milestone VMS, BriefCam, Avigilon, Frigate NVR** - Commercial CCTV systems
 
 ---
 

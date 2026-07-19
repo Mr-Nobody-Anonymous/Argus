@@ -81,8 +81,8 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="SentinelSight API",
-    description="AI Video Analytics Platform with Image Enhancement, Face Recognition, Speed & Height Analysis, LPR, Anomaly Detection, Pose Estimation",
+    title="Argus API",
+    description="AI Video Analytics Platform - The Watchful Guardian. Features: Cross-Camera Tracking, Image Enhancement, Face Recognition, Speed & Height Analysis, LPR, Anomaly Detection, Pose Estimation",
     version="2.1.0",
     lifespan=lifespan
 )
@@ -912,7 +912,8 @@ async def get_metrics():
 async def root():
     """Root endpoint"""
     return {
-        "name": "SentinelSight API",
+        "name": "Argus API",
+        "description": "The Watchful Guardian - AI Video Analytics Platform",
         "version": "2.1.0",
         "status": "running",
         "features": [
@@ -925,6 +926,7 @@ async def root():
             "Height Analysis (meters, categories)",
             "Anomaly Detection (behavior, motion, loitering)",
             "Deep Object Tracking (ByteTrack/DeepSORT/BoT-SORT)",
+            "Cross-Camera Tracking (trajectory prediction, clustering)",
             "Zone-based Rules (Intrusion, Loitering, Speed Violation)",
             "MQTT Integration",
             "Qdrant Vector Database (optional)",
