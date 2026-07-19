@@ -48,6 +48,7 @@ import {
     Settings,
     Close,
     Timeline,
+    Delete,
 } from '@mui/icons-material';
 import { cameraAPI, eventAPI, crossCameraAPI, systemAPI } from '../services/api';
 

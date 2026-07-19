@@ -31,6 +31,7 @@ import {
 import CameraManagement from './pages/CameraManagement';
 import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
+import AdaptiveLearningDashboard from './pages/AdaptiveLearningDashboard';
 import SurveillanceDashboard from './pages/SurveillanceDashboard';
 
 const theme = createTheme({
@@ -103,9 +104,21 @@ function Shell() {
         <Box sx={{ display: 'flex', minHeight: '100vh' }}>
             <AppBar position="fixed" sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}>
                 <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Typography variant="h6" noWrap component="div">
-                        Argus
-                    </Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Box 
+                            component="img" 
+                            src="/assets/argus-logo.svg" 
+                            alt="Argus Logo"
+                            sx={{ 
+                                height: 32, 
+                                width: 32,
+                                filter: 'brightness(0) invert(1)'
+                            }} 
+                        />
+                        <Typography variant="h6" noWrap component="div" sx={{ fontWeight: 'bold' }}>
+                            Argus
+                        </Typography>
+                    </Box>
                     <Chip
                         icon={<Shield />}
                         label="AI Video Analytics"
@@ -137,6 +150,7 @@ function Shell() {
                         <NavItem to="/" icon={<Videocam />} label="Cameras" />
                         <NavItem to="/events" icon={<Event />} label="Events" />
                         <NavItem to="/analytics" icon={<Analytics />} label="Analytics" />
+                        <NavItem to="/learning" icon={<Psychology />} label="Adaptive Learning" />
                     </List>
                     <Divider sx={{ my: 2 }} />
                     <Typography variant="caption" sx={{ px: 2, color: 'text.secondary' }}>
@@ -159,6 +173,7 @@ function Shell() {
                         <Route path="/" element={<CameraManagement />} />
                         <Route path="/events" element={<EventFeed />} />
                         <Route path="/analytics" element={<AnalyticsDashboard />} />
+                        <Route path="/learning" element={<AdaptiveLearningDashboard />} />
                     </Routes>
                 </Container>
             </Box>
