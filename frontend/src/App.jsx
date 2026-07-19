@@ -31,7 +31,7 @@ import {
 import CameraManagement from './pages/CameraManagement';
 import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
-/* import AdaptiveLearningDashboard from './pages/AdaptiveLearningDashboard'; */
+import SurveillanceDashboard from './pages/SurveillanceDashboard';
 
 const theme = createTheme({
     palette: {
