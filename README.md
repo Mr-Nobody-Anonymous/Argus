@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian"/>
+  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="120"/>
 </p>
 
 <h1 align="center">
@@ -24,8 +24,6 @@
 **Metaphorical meaning:** Because the giant had a hundred eyes and was always watching, the term "Argus" in English is also used today to describe a watchful guardian or a highly observant person.
 
 A production-ready AI-powered video analytics platform for real-time CCTV monitoring with object detection, zone-based rules, cross-camera tracking, and advanced criminal activity prediction.
-
-![Argus Demo](https://via.placeholder.com/800x400/0d47a1/FFFFFF?text=Argus+AI+Video+Analytics+Dashboard)
 
 ## 🌟 Features
 
