@@ -107,12 +107,12 @@ function Shell() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                         <Box 
                             component="img" 
-                            src="/assets/argus-logo.svg" 
+                            src="/assets/argus-logo.png" 
                             alt="Argus Logo"
                             sx={{ 
                                 height: 32, 
                                 width: 32,
-                                filter: 'brightness(0) invert(1)'
+                                objectFit: 'contain'
                             }} 
                         />
                         <Typography variant="h6" noWrap component="div" sx={{ fontWeight: 'bold' }}>
