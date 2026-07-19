@@ -30,6 +30,7 @@ from .pose_estimator import get_pose_estimator
 from .deep_tracker import get_deep_tracker
 from .person_reid import get_person_reid
 from .adaptive_learning import get_adaptive_learning_engine
+from .cross_camera_tracker import get_cross_camera_tracker
 
 __all__ = [
     'get_camera_manager',
@@ -47,4 +48,5 @@ __all__ = [
     'get_deep_tracker',
     'get_person_reid',
     'get_adaptive_learning_engine',
+    'get_cross_camera_tracker',
 ]

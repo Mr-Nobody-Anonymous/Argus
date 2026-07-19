@@ -47,3 +47,4 @@ pytorchvideo==0.1.5
 scikit-learn==1.12.0  # For trajectory clustering and prediction
 statsmodels==0.14.0   # For ARMA/ARIMA time series prediction
 torchmetrics==1.2.0   # For deep anomaly model evaluation
+scipy==1.12.0         # For cross-camera matching algorithms
