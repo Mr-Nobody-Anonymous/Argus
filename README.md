@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png" alt="Argus - The Watchful Guardian" width="300"/>
+</p>
+
 # 👁️ Argus - AI Video Analytics Platform
 
 **Metaphorical meaning:** Because the giant had a hundred eyes and was always watching, the term "Argus" in English is also used today to describe a watchful guardian or a highly observant person.
