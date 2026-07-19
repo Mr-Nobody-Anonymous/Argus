@@ -9,7 +9,6 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from collections import deque
 from datetime import datetime, timedelta
 import threading
-import json
 
 if TYPE_CHECKING:
     import numpy as np
@@ -22,7 +21,6 @@ except ImportError:
 try:
     from scipy.spatial.distance import cosine
     from scipy.spatial.distance import cdist
-    from scipy.optimize import linear_sum_assignment
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
