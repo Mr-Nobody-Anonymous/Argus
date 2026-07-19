@@ -22,26 +22,57 @@ import {
     Event,
     Analytics,
     Shields,
+    Psychology,
+    People,
+    Radar,
+    Timeline,
 } from '@mui/icons-material';
 
 import CameraManagement from './pages/CameraManagement';
 import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
+/* import AdaptiveLearningDashboard from './pages/AdaptiveLearningDashboard'; */
 
 const theme = createTheme({
     palette: {
         mode: 'dark',
         primary: {
-            main: '#2196f3',
+            main: '#00bcd4',  // Cyan for tech/surveillance feel
         },
         secondary: {
-            main: '#f50057',
+            main: '#ff4081',
         },
         background: {
-            default: '#0a1929',
-            paper: '#132f4c',
+            default: '#000000',  // True black for surveillance monitors
+            paper: '#0a0a0a',    // Dark gray for panels
+        },
+        info: {
+            main: '#00e5ff',
+        },
+        warning: {
+            main: '#ff9800',
+        },
+        error: {
+            main: '#ff5252',
         },
     },
+    components: {
+        MuiAppBar: {
+            styleOverrides: {
+                root: {
+                    background: 'linear-gradient(90deg, #0d47a1 0%, #1565c0 100%)',
+                    borderBottom: '1px solid rgba(0, 229, 255, 0.2)',
+                }
+            }
+        },
+        MuiDrawer: {
+            styleOverrides: {
+                paper: {
+                    background: 'linear-gradient(180deg, #0a1929 0%, #000000 100%)',
+                }
+            }
+        }
+    }
 });
 
 const drawerWidth = 240;
