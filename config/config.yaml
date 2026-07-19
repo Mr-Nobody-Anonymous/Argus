@@ -1,6 +1,6 @@
 system:
-  fps_target: 15
-  max_cameras: 4
+  fps_target: 10
+  max_cameras: 100
   snapshot_retention_days: 30
   log_level: INFO
   snapshot_dir: data/snapshots

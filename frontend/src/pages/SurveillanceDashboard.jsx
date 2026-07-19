@@ -1,6 +1,7 @@
 /**
  * Advanced Surveillance Dashboard
  * Modern command center UI with real-time video feeds and alerts
+ * Supports up to 100+ cameras with pagination
  * Integrated with Cross-Camera Tracker and Enhanced Learning
  */
 import React, { useState, useEffect, useRef } from 'react';
@@ -29,6 +30,7 @@ import {
     ListItemText,
     Alert,
     Button,
+    Pagination,
 } from '@mui/material';
 import {
     Videocam,
@@ -52,6 +54,8 @@ import {
 } from '@mui/icons-material';
 import { cameraAPI, eventAPI, crossCameraAPI, systemAPI } from '../services/api';
 
+const CAMERAS_PER_PAGE = 12; // Show 12 cameras per page (3 rows x 4 columns on large screens)
+
 function SurveillanceDashboard() {
     const [cameras, setCameras] = useState([]);
     const [events, setEvents] = useState([]);
@@ -59,6 +63,7 @@ function SurveillanceDashboard() {
     const [selectedCamera, setSelectedCamera] = useState(null);
     const [crossCameraTargets, setCrossCameraTargets] = useState([]);
     const [crossCameraStats, setCrossCameraStats] = useState(null);
+    const [currentPage, setCurrentPage] = useState(1);
     const [stats, setStats] = useState({
         activeCameras: 0,
         totalEvents: 0,
@@ -127,6 +132,10 @@ function SurveillanceDashboard() {
         }
     };
 
+    const handlePageChange = (event, value) => {
+        setCurrentPage(value);
+    };
+
     const getStatusColor = (status) => {
         switch (status) {
             case 'online': return 'success';
@@ -151,6 +160,13 @@ function SurveillanceDashboard() {
         }
     };
 
+    // Paginated cameras
+    const totalPages = Math.ceil(cameras.length / CAMERAS_PER_PAGE);
+    const paginatedCameras = cameras.slice(
+        (currentPage - 1) * CAMERAS_PER_PAGE,
+        currentPage * CAMERAS_PER_PAGE
+    );
+
     return (
         <Box sx={{ p: 2 }}>
             {/* Header with Status */}
@@ -165,7 +181,7 @@ function SurveillanceDashboard() {
                         Argus Command Center
                     </Typography>
                     <Typography variant="subtitle1" color="text.secondary">
-                        AI-Powered Video Surveillance & Analytics
+                        AI-Powered Video Surveillance & Analytics ({cameras.length} cameras configured)
                     </Typography>
                 </Box>
                 
@@ -309,10 +325,21 @@ function SurveillanceDashboard() {
             <Box sx={{ display: 'flex', gap: 2, height: 'calc(100vh - 250px)' }}>
                 {/* Camera Grid */}
                 <Box sx={{ flex: 2, overflow: 'auto' }}>
-                    <Typography variant="h6" gutterBottom>Live Camera Feeds</Typography>
-                    <Grid container spacing={2}>
-                        {cameras.map((camera) => (
-                            <Grid item xs={12} md={6} lg={4} key={camera.id}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Typography variant="h6">Live Camera Feeds</Typography>
+                        {cameras.length > CAMERAS_PER_PAGE && (
+                            <Pagination 
+                                count={totalPages} 
+                                page={currentPage} 
+                                onChange={handlePageChange}
+                                color="primary"
+                                size="small"
+                            />
+                        )}
+                    </Box>
+                    <Grid container spacing={1.5}>
+                        {paginatedCameras.map((camera) => (
+                            <Grid item xs={6} sm={4} md={4} lg={3} xl={2} key={camera.id}>
                                 <Paper sx={{ 
                                     position: 'relative',
                                     bgcolor: 'black',
@@ -326,8 +353,8 @@ function SurveillanceDashboard() {
                                 }}>
                                     <Box sx={{ 
                                         position: 'absolute',
-                                        top: 8,
-                                        left: 8,
+                                        top: 4,
+                                        left: 4,
                                         zIndex: 1,
                                     }}>
                                         <Chip 
@@ -338,8 +365,8 @@ function SurveillanceDashboard() {
                                     </Box>
                                     <Box sx={{ 
                                         position: 'absolute',
-                                        top: 8,
-                                        right: 8,
+                                        top: 4,
+                                        right: 4,
                                         zIndex: 1,
                                     }}>
                                         <Tooltip title="Fullscreen">
@@ -359,20 +386,22 @@ function SurveillanceDashboard() {
                                         height: '100%',
                                         color: 'text.disabled',
                                     }}>
-                                        <VideocamOff sx={{ fontSize: 48, opacity: 0.3 }} />
+                                        <VideocamOff sx={{ fontSize: 32, opacity: 0.3 }} />
                                     </Box>
                                     <Box sx={{ 
                                         position: 'absolute',
                                         bottom: 0,
                                         left: 0,
                                         right: 0,
-                                        p: 1,
+                                        p: 0.5,
                                         background: 'linear-gradient(transparent, rgba(0,0,0,0.8))',
                                     }}>
-                                        <Typography variant="caption">{camera.name}</Typography>
-                                        <Typography variant="caption" display="block" color="text.secondary">
-                                            {camera.location_tag}
-                                        </Typography>
+                                        <Typography variant="caption" noWrap>{camera.name}</Typography>
+                                        {camera.location_tag && (
+                                            <Typography variant="caption" display="block" color="text.secondary" noWrap>
+                                                {camera.location_tag}
+                                            </Typography>
+                                        )}
                                     </Box>
                                 </Paper>
                             </Grid>
@@ -381,7 +410,7 @@ function SurveillanceDashboard() {
                 </Box>
 
                 {/* Alerts Panel */}
-                <Box sx={{ flex: 1, minWidth: 300 }}>
+                <Box sx={{ flex: 1, minWidth: 280 }}>
                     <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
                         <Typography variant="h6" gutterBottom>
                             Active Alerts
