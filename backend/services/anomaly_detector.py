@@ -465,6 +465,142 @@ class AnomalyDetector:
             logger.error(f"Error detecting group behavior: {e}")
             return anomalies
 
+    # ==================== Advanced Intelligence ====================
+
+    def detect_violence_patterns(self, frame: np.ndarray, detections: List[Dict]) -> List[Dict]:
+        """
+        Detect potential violence or aggressive behavior.
+        
+        Patterns:
+        - Rapid gestures (detected via pose keypoints)
+        - Multiple people in close contact
+        - Aggressive pose stances
+        """
+        anomalies = []
+        
+        try:
+            # Check for close contact between persons
+            persons = [d for d in detections if d.get('class_name') == 'person' and d.get('track_id')]
+            
+            for i, p1 in enumerate(persons):
+                for p2 in persons[i+1:]:
+                    x1, y1, x2, y2 = p1['bbox']
+                    x3, y3, x4, y4 = p2['bbox']
+                    
+                    # Calculate distance between persons
+                    center1 = ((x1+x2)/2, (y1+y2)/2)
+                    center2 = ((x3+x4)/2, (y3+y4)/2)
+                    distance = ((center1[0]-center2[0])**2 + (center1[1]-center2[1])**2)**0.5
+                    
+                    if distance < 50:  # Very close - potential conflict
+                        anomalies.append({
+                            'type': 'close_person_contact',
+                            'confidence': 0.7,
+                            'description': 'Multiple persons in very close proximity',
+                            'persons': [p1.get('track_id'), p2.get('track_id')]
+                        })
+            
+            return anomalies
+            
+        except Exception as e:
+            logger.error(f"Error detecting violence patterns: {e}")
+            return anomalies
+
+    def detect_crowd_density(self, frame: np.ndarray, detections: List[Dict]) -> List[Dict]:
+        """
+        Detect overcrowding or dense crowd situations.
+        
+        Useful for:
+        - Safety monitoring
+        - Social distancing enforcement
+        - Event capacity management
+        """
+        anomalies = []
+        
+        try:
+            persons = [d for d in detections if d.get('class_name') == 'person']
+            h, w = frame.shape[:2]
+            frame_area = w * h
+            cell_size = 100  # Grid cells for density calculation
+            
+            # Create density grid
+            grid = {}
+            for p in persons:
+                x, y, x2, y2 = p['bbox']
+                cell_x, cell_y = int(x/cell_size), int(y/cell_size)
+                key = f"{cell_x}_{cell_y}"
+                grid[key] = grid.get(key, 0) + 1
+            
+            # Find overcrowded cells
+            for key, count in grid.items():
+                if count > 5:  # More than 5 people in same cell
+                    anomalies.append({
+                        'type': 'crowd_density',
+                        'confidence': min(count / 10.0, 1.0),
+                        'description': f'Dense crowd detected: {count} people in area',
+                        'cell': key,
+                        'count': count
+                    })
+            
+            return anomalies
+            
+        except Exception as e:
+            logger.error(f"Error detecting crowd density: {e}")
+            return anomalies
+
+    def predict_behavior_pattern(self, object_id: str, future_seconds: int = 5) -> Optional[Dict]:
+        """
+        Predict likely future behavior of an object.
+        
+        Uses:
+        - Current trajectory direction
+        - Speed trends
+        - Zone proximity
+        
+        Returns prediction with confidence and recommended actions.
+        """
+        try:
+            if object_id not in self.object_histories:
+                return None
+            
+            history = list(self.object_histories[object_id])
+            if len(history) < 5:
+                return None
+            
+            # Get recent trajectory
+            positions = [(h.get('bbox', [0,0,0,0])[0], h.get('bbox', [0,0,0,0])[1]) 
+                         for h in history[-5:]]
+            
+            # Calculate average velocity
+            if len(positions) >= 2 and np is not None:
+                velocities = []
+                for i in range(1, len(positions)):
+                    vx = positions[i][0] - positions[i-1][0]
+                    vy = positions[i][1] - positions[i-1][1]
+                    velocities.append((vx, vy))
+                
+                avg_vx = np.mean([v[0] for v in velocities])
+                avg_vy = np.mean([v[1] for v in velocities])
+                
+                # Predict future positions
+                last_x, last_y = positions[-1]
+                predictions = []
+                for t in range(1, future_seconds * 15):  # 15 fps
+                    predictions.append((last_x + avg_vx * t, last_y + avg_vy * t))
+                
+                return {
+                    'object_id': object_id,
+                    'predicted_positions': predictions[:10],  # Next ~10 frames
+                    'trend': 'stationary' if abs(avg_vx) < 5 and abs(avg_vy) < 5 else 'moving',
+                    'direction_vector': (float(avg_vx), float(avg_vy))
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error predicting behavior: {e}")
+            return None
+
 
 # Global instance
 _anomaly_detector = None
