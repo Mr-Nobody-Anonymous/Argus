@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="200"/>
+<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="180" align="center"/>
 
 <h1 align="center">
   👁️ Argus - AI Video Analytics Platform
