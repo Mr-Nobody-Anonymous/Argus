@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: sentinelsight-backend
+    container_name: argus-backend
     ports:
       - "8000:8000"
     volumes:
@@ -33,7 +33,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    container_name: sentinelsight-frontend
+    container_name: argus-frontend
     ports:
       - "3000:80"
     depends_on:
@@ -42,7 +42,7 @@ services:
 
   mqtt:
     image: eclipse-mosquitto:2
-    container_name: sentinelsight-mqtt
+    container_name: argus-mqtt
     ports:
       - "1883:1883"
     volumes:
@@ -54,7 +54,7 @@ services:
   # Qdrant Vector Database for feature storage and similarity search
   qdrant:
     image: qdrant/qdrant:v1.12.0
-    container_name: sentinelsight-qdrant
+    container_name: argus-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -69,7 +69,7 @@ services:
   # Kafka for event streaming and analytics
   kafka:
     image: bitnami/kafka:3.7
-    container_name: sentinelsight-kafka
+    container_name: argus-kafka
     ports:
       - "9092:9092"
       - "9093:9093"
