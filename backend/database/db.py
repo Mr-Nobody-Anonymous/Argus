@@ -98,6 +98,17 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_events_composite ON events(camera_id, timestamp DESC)"
         )
 
+        # Behavior profiles table for adaptive learning
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS behavior_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id TEXT NOT NULL UNIQUE,
+                patterns TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         self.conn.commit()
         logger.info("Database tables created successfully")
 

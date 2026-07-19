@@ -11,9 +11,8 @@ Integrated features from forked repositories:
 - anomalib: Anomaly detection (anomaly_detector.py)
 - deep-person-reid/fast-reid: Person re-identification (person_reid.py)
 
-Infrastructure:
-- Qdrant: Vector database (docker-compose.yml)
-- Kafka: Event streaming (docker-compose.yml)
+Advanced Intelligence:
+- adaptive_learning: Self-learning behavior patterns, emotion baselines, anomaly detection
 """
 
 from .camera_manager import get_camera_manager
@@ -30,6 +29,7 @@ from .anomaly_detector import get_anomaly_detector
 from .pose_estimator import get_pose_estimator
 from .deep_tracker import get_deep_tracker
 from .person_reid import get_person_reid
+from .adaptive_learning import get_adaptive_learning_engine
 
 __all__ = [
     'get_camera_manager',
@@ -46,4 +46,5 @@ __all__ = [
     'get_pose_estimator',
     'get_deep_tracker',
     'get_person_reid',
+    'get_adaptive_learning_engine',
 ]
