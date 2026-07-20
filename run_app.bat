@@ -1,32 +1,39 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 echo ===================================
 echo Starting Argus AI Platform
 echo ===================================
 
-REM Check if venv exists
-if not exist "venv\Scripts\activate" (
-    echo [ERROR] Virtual environment not found!
-    echo Please create one first: python -m venv venv
-    echo Then install dependencies: pip install -r backend/requirements.txt
+REM Check if we're in the right directory
+if not exist "backend\api\main.py" (
+    echo [ERROR] Please run this script from the Argus project folder!
+    echo Current directory: %CD%
     pause
     exit /b 1
 )
 
-REM Check if node_modules exists in frontend
-if not exist "frontend\node_modules" (
-    echo [WARNING] Frontend dependencies not installed!
-    echo Running npm install in frontend...
-    cd frontend
-    call npm install
-    cd ..
+REM Check if venv exists and has valid python
+if exist "venv\Scripts\python.exe" (
+    echo [OK] Virtual environment found
+    set PYTHON_CMD=venv\Scripts\python
+) else (
+    echo [INFO] Using system Python
+    set PYTHON_CMD=python
+)
+
+REM Install dependencies if needed (minimal install)
+echo Checking dependencies...
+%PYTHON_CMD% -c "import fastapi" 2>nul
+if errorlevel 1 (
+    echo Installing minimal dependencies...
+    %PYTHON_CMD% -m pip install --quiet fastapi uvicorn[standard] python-multipart opencv-python-headless ultralytics pydantic pydantic-settings httpx
 )
 
 echo 1. Starting Backend Server (port 8000)...
-start "Argus Backend" cmd /k "venv\Scripts\activate && python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
+start "Argus Backend" cmd /k "%PYTHON_CMD% -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
 
 echo 2. Starting Frontend Dashboard (port 3000)...
-start "Argus Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "Argus Frontend" cmd /k "cd /d %~dp0frontend && npm install && npm run dev"
 
 echo ===================================
 echo System is starting up!
@@ -35,11 +42,5 @@ echo API docs at: http://localhost:8000/docs
 echo ===================================
 echo.
 echo IMPORTANT: Close this window to stop both servers.
-echo.
-echo If running manually, always run from the PROJECT ROOT folder:
-echo   cd C:\Users\hp\Downloads\argus-merge-work\Argus
-echo.
-echo In CMD (recommended):  venv\Scripts\activate ^&^& python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
-echo In PowerShell:          .\venv\Scripts\Activate.ps1; python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
 echo.
 pause

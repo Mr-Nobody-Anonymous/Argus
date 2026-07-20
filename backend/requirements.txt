@@ -26,7 +26,6 @@ onnxruntime==1.16.3
 
 # Emotion detection (facial expression analysis)
 deepface==0.0.94
-gdown==0.0.7
 urllib3==3.0.1
 
 # License Plate Recognition & OCR

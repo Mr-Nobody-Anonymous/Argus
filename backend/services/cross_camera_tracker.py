@@ -209,20 +209,19 @@ class CrossCameraTracker:
         adjacent_cameras = self._get_adjacent_cameras(current_camera)
 
         for person_id, cached_features in self.appearance_features.items():
-            # Skip if person is actively tracked in current camera
+            # Skip if person is actively tracked in current camera (already matched here)
             if person_id in self.targeted_persons:
                 track = self.targeted_persons[person_id]
+                # Skip if this person is currently being tracked and was last seen in this camera
                 if track.get('status') == 'active' and track.get('last_camera') == current_camera:
-                    # But still consider if recently appeared in adjacent camera
-                    if track.get('last_camera') not in adjacent_cameras:
-                        continue
+                    continue
 
             similarity = cosine(features.flatten(), cached_features.flatten())
 
-            # Boost confidence for adjacent camera matches
+            # Boost confidence for adjacent camera matches (person might have moved from adjacent camera)
             if person_id in self.targeted_persons:
-                last_camera = self.targeted_persons[person_id].get('last_camera')
-                if last_camera in adjacent_cameras:
+                target_last_camera = self.targeted_persons[person_id].get('last_camera')
+                if target_last_camera in adjacent_cameras:
                     similarity *= 0.8  # Boost adjacent camera matches
 
             if similarity < best_score and similarity < 0.5:  # Threshold for match
