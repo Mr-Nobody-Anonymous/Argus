@@ -260,7 +260,3 @@ argus/
 ## 📄 License
 
 MIT License - See LICENSE file for details
-
----
-
-**Built for Saimax Tech Solutions AI Job Assignment**

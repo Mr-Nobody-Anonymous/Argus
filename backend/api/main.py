@@ -193,6 +193,9 @@ async def delete_camera(camera_id: int):
     try:
         camera_manager = get_camera_manager()
         coordinator = get_processing_coordinator()
+
+        if not camera_manager.get_camera(camera_id):
+            raise HTTPException(status_code=404, detail="Camera not found")
         
         # Stop processing
         coordinator.stop_camera_processing(camera_id)
@@ -201,6 +204,8 @@ async def delete_camera(camera_id: int):
         camera_manager.delete_camera(camera_id)
         
         return {"status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting camera: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -266,8 +271,12 @@ async def delete_zone(zone_id: int):
     """Delete zone"""
     try:
         zone_manager = get_zone_manager()
+        if not zone_manager.get_zone(zone_id):
+            raise HTTPException(status_code=404, detail="Zone not found")
         zone_manager.delete_zone(zone_id)
         return {"status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting zone: {e}")
         raise HTTPException(status_code=500, detail=str(e))

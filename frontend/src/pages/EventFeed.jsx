@@ -281,11 +281,11 @@ export default function EventFeed() {
                                             size="small"
                                         />
                                     </TableCell>
-                                    <TableCell>{event.object_type || 'N/A'}</TableCell>
+                                    <TableCell>{event.object_type ?? 'N/A'}</TableCell>
                                     <TableCell>
                                         <Box>
                                             <Typography variant="body2">
-                                                {(event.confidence * 100).toFixed(1)}%
+                                                {event.confidence ? (event.confidence * 100).toFixed(1) + '%' : 'N/A'}
                                             </Typography>
                                         </Box>
                                     </TableCell>
@@ -315,7 +315,7 @@ export default function EventFeed() {
                                     <Grid item xs={12}>
                                         <Box
                                             component="img"
-                                            src={`/snapshots/${selectedEvent.snapshot_path.replace(/.*[\\\/]/, '')}`}
+                                            src={`/snapshots/${selectedEvent.snapshot_path.split(/[\\/]/)[selectedEvent.snapshot_path.split(/[\\/]/).length - 1]}`}
                                             alt="Event snapshot"
                                             sx={{ width: '100%', borderRadius: 1 }}
                                         />
@@ -327,8 +327,8 @@ export default function EventFeed() {
                                     { label: 'Camera ID', value: selectedEvent.camera_id },
                                     { label: 'Rule Type', value: selectedEvent.rule_type },
                                     { label: 'Priority', value: selectedEvent.priority },
-                                    { label: 'Object Type', value: selectedEvent.object_type },
-                                    { label: 'Confidence', value: `${(selectedEvent.confidence * 100).toFixed(1)}%` },
+                                    { label: 'Object Type', value: selectedEvent.object_type ?? 'N/A' },
+                                    { label: 'Confidence', value: selectedEvent.confidence ? `${(selectedEvent.confidence * 100).toFixed(1)}%` : 'N/A' },
                                     { label: 'Timestamp', value: format(new Date(selectedEvent.timestamp), 'PPpp') },
                                 ].map((item) => (
                                     <Grid item xs={6} key={item.label}>

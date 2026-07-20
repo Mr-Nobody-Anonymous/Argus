@@ -26,8 +26,10 @@ import {
     Event,
 } from '@mui/icons-material';
 import api from '../services/api';
+import { useTheme } from '@mui/material/styles';
 
-function SurveillanceDashboard() {
+export default function SurveillanceDashboard() {
+    const theme = useTheme();
     const [cameras, setCameras] = useState([]);
     const [events, setEvents] = useState([]);
     const [liveMode, setLiveMode] = useState(true);
@@ -46,16 +48,18 @@ function SurveillanceDashboard() {
 
     const fetchData = async () => {
         try {
-            const camRes = await api.get('/api/v1/cameras');
-            setCameras(camRes.data || []);
+            const camRes = await api.get('/cameras');
+            const cameraList = camRes.data.cameras || [];
+            setCameras(cameraList);
             
-            const eventRes = await api.get('/api/v1/events?limit=10');
-            setEvents(eventRes.data || []);
+            const eventRes = await api.get('/events', { params: { limit: 10 } });
+            const eventList = eventRes.data.events || [];
+            setEvents(eventList);
             
             setStats({
-                activeCameras: camRes.data?.filter(c => c.status === 'online').length || 0,
-                totalEvents: eventRes.data?.length || 0,
-                highPriority: eventRes.data?.filter(e => e.priority === 'high').length || 0,
+                activeCameras: cameraList.filter((camera) => camera.status === 'online').length,
+                totalEvents: eventRes.data.total || 0,
+                highPriority: eventList.filter((event) => ['high', 'critical'].includes(event.priority)).length,
                 aiStatus: 'online',
             });
         } catch (error) {
@@ -66,8 +70,9 @@ function SurveillanceDashboard() {
     const getStatusColor = (status) => {
         switch (status) {
             case 'online': return 'success';
-            case 'offline': return 'error';
-            default: return 'warning';
+            case 'offline': return 'default';
+            case 'error': return 'error';
+            default: return 'default';
         }
     };
 
@@ -75,7 +80,20 @@ function SurveillanceDashboard() {
         switch (priority) {
             case 'high': return 'error';
             case 'medium': return 'warning';
+            case 'low': return 'info';
             default: return 'info';
+        }
+    };
+
+    const getPriorityBorderColor = (priority) => {
+        switch (priority) {
+            case 'high':
+            case 'critical':
+                return theme.palette.error.main;
+            case 'medium':
+                return theme.palette.warning.main;
+            default:
+                return theme.palette.info.main;
         }
     };
 
@@ -264,7 +282,7 @@ function SurveillanceDashboard() {
                                         p: 1.5, 
                                         borderRadius: 1,
                                         bgcolor: 'rgba(255,255,255,0.03)',
-                                        borderLeft: `3px solid ${getPriorityColor(event.priority)}.main`,
+                                        borderLeft: `3px solid ${getPriorityBorderColor(event.priority)}`,
                                     }}>
                                         <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                                             <Typography variant="subtitle2">{event.rule_type}</Typography>
@@ -283,5 +301,3 @@ function SurveillanceDashboard() {
         </Box>
     );
 }
-
-export default SurveillanceDashboard;

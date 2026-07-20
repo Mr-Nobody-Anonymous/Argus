@@ -24,6 +24,9 @@ class Database:
         """Initialize database with schema"""
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # SQLite only enforces declared foreign keys when this is enabled on the
+        # connection. It makes the schema's ON DELETE CASCADE effective.
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self._create_tables()
         logger.info(f"Database initialized at {self.db_path}")
 
