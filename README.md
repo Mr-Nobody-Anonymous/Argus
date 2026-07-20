@@ -1,16 +1,22 @@
-<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="180" align="center"/>
+<div align="center">
+<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/Stylized%20Multifaceted%20Eye%20Logo%20for%20Argus.png?v=3" alt="Argus - The Watchful Guardian" width="500" height="50%" align="center"/>
+</div>
 
 <h1 align="center">
-  👁️ Argus - AI Video Analytics Platform
+   Argus - AI Video Analytics Platform
 </h1>
 
+<div align="center">
+  
 ![GitHub Repo stars](https://img.shields.io/github/stars/Mr-Nobody-Anonymous/Argus?style=social) ![License](https://img.shields.io/github/license/Mr-Nobody-Anonymous/Argus?color=blue) ![Issues](https://img.shields.io/github/issues/Mr-Nobody-Anonymous/Argus?color=red) ![Last Commit](https://img.shields.io/github/last-commit/Mr-Nobody-Anonymous/Argus?color=green)
-
+---
 [**Quickstart**](#quick-start) | 
 [**Features**](#features) | 
 [**API Reference**](#api-reference) | 
 [**Testing**](#testing) | 
 [**FAQ**](#troubleshooting)
+
+</div>
 
 **Metaphorical meaning:** Because the giant had a hundred eyes and was always watching, the term "Argus" in English is also used today to describe a watchful guardian or a highly observant person.
 
