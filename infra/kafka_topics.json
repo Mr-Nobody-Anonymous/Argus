@@ -1,0 +1,93 @@
+{
+  "topics": [
+    {
+      "name": "camera.raw.frames",
+      "partitions": 8,
+      "retention_hours": 1,
+      "schema": {
+        "camera_id": "integer",
+        "frame": "binary",
+        "timestamp": "float"
+      },
+      "producer": "mediamtx_ffmpeg_worker",
+      "consumer": "enhancement_worker"
+    },
+    {
+      "name": "ai.detections.tracked",
+      "partitions": 16,
+      "retention_hours": 6,
+      "schema": {
+        "camera_id": "integer",
+        "frame_id": "string",
+        "tracks": [
+          {
+            "track_id": "integer",
+            "class": "string",
+            "confidence": "float",
+            "bbox": ["x1", "y1", "x2", "y2"],
+            "center": ["x", "y"]
+          }
+        ],
+        "timestamp": "float"
+      },
+      "producer": "detection_worker",
+      "consumers": ["biometric_worker", "anpr_worker", "zone_worker"]
+    },
+    {
+      "name": "ai.face.embeddings",
+      "partitions": 8,
+      "retention_hours": 24,
+      "schema": {
+        "track_id": "integer",
+        "camera_id": "integer",
+        "face_vector_size": 512,
+        "liveness": "boolean",
+        "timestamp": "float"
+      },
+      "producer": "face_recognition_worker",
+      "consumer": "vector_db_writer"
+    },
+    {
+      "name": "ai.person.reid",
+      "partitions": 8,
+      "retention_hours": 24,
+      "schema": {
+        "track_id": "integer",
+        "camera_id": "integer",
+        "reid_vector_size": 256,
+        "timestamp": "float"
+      },
+      "producer": "reid_worker",
+      "consumer": "vector_db_writer"
+    },
+    {
+      "name": "ai.pose.analysis",
+      "partitions": 8,
+      "retention_hours": 24,
+      "schema": {
+        "track_id": "integer",
+        "keypoints": ["float"],
+        "action": "string",
+        "confidence": "float",
+        "timestamp": "float"
+      },
+      "producer": "pose_worker",
+      "consumer": "action_classifier"
+    },
+    {
+      "name": "events.triggers",
+      "partitions": 8,
+      "retention_days": 7,
+      "schema": {
+        "camera_id": "integer",
+        "event_type": "enum[tripwire, loitering, anomaly, license_plate, face_match]",
+        "track_id": "integer",
+        "metadata": "json",
+        "snapshot_path": "string",
+        "timestamp": "float"
+      },
+      "producer": "rule_engine",
+      "consumers": ["elasticsearch_indexer", "websocket_broadcaster"]
+    }
+  ]
+}
