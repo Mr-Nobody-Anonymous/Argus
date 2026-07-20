@@ -1,0 +1,62 @@
+# MediaMTX Configuration
+# RTSP/HLS/WebRTC multiplexing
+
+logLevel: info
+logDestinations: [stdout]
+
+# RTSP settings
+rtspPort: 8554
+rtspAddress: :8554
+
+# RTMP settings  
+rtmpPort: 1935
+rtmpAddress: :1935
+
+# HTTP API + WebRTC
+httpPort: 8080
+httpAddress: :8080
+
+# HLS settings
+hlsDisable: false
+hlsVariant: mpegts
+
+# WebRTC settings
+webrtcDisable: false
+webrtcLocalAddr: :8080
+
+# Metrics
+metrics: true
+metricsAddress: :9090
+
+# Stream settings
+stream:
+  # Global stream settings
+  readBufferSize: 4096
+  writeBufferSize: 4096
+  maxConsumers: 50
+  
+  # Recording
+  record: false
+
+# Paths - Define stream paths
+paths:
+  # All cameras
+  all:
+    runOnInit:
+    runOnInitRestart: false
+    
+  # Camera ingest path
+  camera:
+    runOnInit: ffmpeg -re -stream_loop -1 -i /tmp/streams/input.mp4 -vcodec libx264 -preset ultrafast -tune zerolatency -f rtsp rtsp://localhost:8554/$PATH
+    runOnInitRestart: false
+    source: publisher
+    publisher:
+      readBufferSize: 4096
+
+# Authentication (disable for dev)
+authentication:
+  mode: false
+
+# TLS (optional)
+# certificate: /certs/cert.pem
+# key: /certs/key.pem

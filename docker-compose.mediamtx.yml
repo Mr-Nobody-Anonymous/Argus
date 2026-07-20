@@ -1,0 +1,89 @@
+# MediaMTX (formerly RTSP-Simple-Server) Configuration
+# RTSP/HLS/WebRTC stream ingestion and rebroadcasting
+version: '3.8'
+
+services:
+  mediamtx:
+    image: aler9/rtsp-simple-server:latest
+    container_name: argus_mediamtx
+    ports:
+      - "8554:8554"      # RTSP server
+      - "8080:8080"      # HTTP API/WebRTC
+      - "1935:1935"      # RTMP server
+    volumes:
+      - ./mediamtx/config.yml:/mediamtx/config.yml:ro
+      - ./data/streams:/tmp/streams
+    restart: unless-stopped
+    networks:
+      - surveillance
+
+  zookeeper:
+    image: bitnami/zookeeper:3.8
+    container_name: argus_zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: argus_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_BROKER_ID=1
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092
+    depends_on:
+      - zookeeper
+    networks:
+      - surveillance
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: argus_elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - surveillance
+
+  grafana:
+    image: grafana/grafana-enterprise:10.2
+    container_name: argus_grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - elasticsearch
+    networks:
+      - surveillance
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: argus_qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    networks:
+      - surveillance
+
+networks:
+  surveillance:
+    driver: bridge
+
+volumes:
+  grafana-storage:
+  qdrant-storage:
