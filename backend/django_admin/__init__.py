@@ -3,7 +3,6 @@ Django Admin app for Argus
 Provides Django admin interface alongside FastAPI
 """
 import os
-import sys
 from pathlib import Path
 
 # Ensure data directory exists
@@ -64,10 +63,6 @@ if not settings.configured:
         ],
     )
     django.setup()
-
-
-# Import models for registration (they are defined in admin.py)
-from .admin import Camera, Zone, Event, BehaviorProfile
 
 # Create tables on module import
 def setup_database():
