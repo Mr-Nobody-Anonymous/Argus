@@ -32,7 +32,7 @@ enhancement:
 
 # Face Recognition Configuration
 face_recognition:
-  enabled: true  # Set to true to enable face detection/recognition
+  enabled: true
   confidence_threshold: 0.6
   model_path: models/face_recognition
   max_faces_per_frame: 10
@@ -40,7 +40,7 @@ face_recognition:
 # Speed Analysis Configuration
 speed_analysis:
   enabled: true
-  calibration_factor: 0.05  # meters per pixel at reference distance
+  calibration_factor: 0.05
   reference_distance_m: 10.0
 
 # Height Analysis Configuration
@@ -58,13 +58,48 @@ mqtt:
 database:
   url: sqlite:///data/argus.db
 
-# Example camera configurations (can be managed via API)
-cameras: []
+# ── Mock Camera Definitions (for stream_simulator + API seeding) ──
+cameras:
+  - id: 1
+    name: "Entrance Gate - Cam 1"
+    rtsp_url: "rtsp://localhost:8554/cam1"
+    location_tag: "site/perimeter/entrance"
+    status: "offline"
+    fps: 0
+  - id: 2
+    name: "Parking Lot - Cam 2"
+    rtsp_url: "rtsp://localhost:8554/cam2"
+    location_tag: "site/parking/lot_a"
+    status: "offline"
+    fps: 0
+  - id: 3
+    name: "Loading Dock - Cam 3"
+    rtsp_url: "rtsp://localhost:8554/cam3"
+    location_tag: "site/logistics/dock"
+    status: "offline"
+    fps: 0
+  - id: 4
+    name: "Rooftop Terrace - Cam 4"
+    rtsp_url: "rtsp://localhost:8554/cam4"
+    location_tag: "site/rooftop/terrace"
+    status: "offline"
+    fps: 0
+
+# ── Default Virtual Zones ──
+zones:
+  - camera_id: 1
+    name: "Restricted Entry"
+    type: polygon
+    coordinates: [[50, 50], [590, 50], [590, 430], [50, 430]]
+  - camera_id: 2
+    name: "VIP Parking"
+    type: polygon
+    coordinates: [[200, 100], [440, 100], [440, 300], [200, 300]]
 
 # License Plate Recognition Configuration
 license_plate:
   enabled: true
-  region: us  # us, eu, uk
+  region: us
   min_confidence: 0.6
 
 # Anomaly Detection Configuration
@@ -196,15 +231,11 @@ lpr_agent:
 # Generative-Evolutionary Cognition Engine Configuration
 evolutionary_engine:
   enabled: true
-
-  # Generative Synthesizer params
   synthesizer:
     enabled: true
     context_window: 50
     min_generation_interval_s: 60
     max_generated_rules: 20
-
-  # Evolutionary Evaluator params
   evaluator:
     enabled: true
     evaluation_window: 1000
@@ -215,8 +246,6 @@ evolutionary_engine:
       kafka_latency_ms: 0.1
       rule_precision: 0.15
     survival_threshold: 0.4
-
-  # Mutation Orchestrator params
   mutation:
     enabled: true
     initial_mutation_rate: 0.1
@@ -225,7 +254,6 @@ evolutionary_engine:
     population_cap: 50
     prune_interval_s: 300
     crossover_rate: 0.3
-    # Dynamic Optimization Vector bounds
     vector_bounds:
       yolo_conf_threshold: [0.1, 0.9]
       iou_threshold: [0.1, 0.9]
@@ -233,11 +261,10 @@ evolutionary_engine:
       frame_skipping_cadence: [1, 5]
       rules_engine_cooldown: [0.5, 10.0]
 
-
 # Deep Tracker Configuration
 tracker:
   enabled: true
-  algorithm: bytetrack  # deepsort, botsort, bytetrack
+  algorithm: bytetrack
   track_buffer: 30
   match_threshold: 0.6
 

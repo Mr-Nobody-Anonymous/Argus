@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from config.config import get_config
+from backend.config.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -387,22 +387,34 @@ class ConsortiumBroker:
         """Lazy-init telemetry monitor reference (avoids circular imports)."""
         if self._telemetry_monitor is None:
             try:
-                from management.telemetry_monitor import get_telemetry_monitor
-                self._telemetry_monitor = get_telemetry_monitor()
+                from ..management.telemetry_monitor import get_telemetry_monitor as _g_tm
+                self._telemetry_monitor = _g_tm()
             except Exception as e:
                 logger.warning(f"Could not init telemetry monitor: {e}")
-                return None
+                # Try with full backend path
+                try:
+                    from backend.services.management.telemetry_monitor import get_telemetry_monitor as _g_tm2
+                    self._telemetry_monitor = _g_tm2()
+                except Exception as e2:
+                    logger.warning(f"Could not init telemetry monitor (backend path): {e2}")
+                    return None
         return self._telemetry_monitor
 
     def _get_attention_tracker(self):
         """Lazy-init user attention tracker reference (avoids circular imports)."""
         if self._attention_tracker is None:
             try:
-                from management.user_attention_tracker import get_user_attention_tracker
-                self._attention_tracker = get_user_attention_tracker()
+                from ..management.user_attention_tracker import get_user_attention_tracker as _g_uat
+                self._attention_tracker = _g_uat()
             except Exception as e:
                 logger.warning(f"Could not init attention tracker: {e}")
-                return None
+                # Try with full backend path
+                try:
+                    from backend.services.management.user_attention_tracker import get_user_attention_tracker as _g_uat2
+                    self._attention_tracker = _g_uat2()
+                except Exception as e2:
+                    logger.warning(f"Could not init attention tracker (backend path): {e2}")
+                    return None
         return self._attention_tracker
 
     # ── Internal Helpers ────────────────────────────────────────────────

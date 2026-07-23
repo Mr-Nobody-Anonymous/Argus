@@ -40,6 +40,8 @@ from services.core_engine.deep_tracker import get_deep_tracker
 from services.analytics.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
 from database.db import get_db, close_db
 from config.config import get_config
+from api.stream_routes import router as stream_router
+from api.stream_ws import router as legacy_stream_router  # Legacy, avoid route conflicts
 
 # Configure logging
 logging.basicConfig(
@@ -100,6 +102,9 @@ app.add_middleware(
 snapshot_dir = Path("data/snapshots")
 snapshot_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/snapshots", StaticFiles(directory=str(snapshot_dir)), name="snapshots")
+
+# Register WebSocket and streaming endpoints
+app.include_router(stream_router, prefix="/api")
 
 
 # ==================== Camera Endpoints ====================

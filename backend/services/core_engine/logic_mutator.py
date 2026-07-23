@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any
 
-from config.config import get_config
+from ...config.config import get_config
 
 logger = logging.getLogger(__name__)
 

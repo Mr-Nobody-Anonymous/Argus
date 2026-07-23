@@ -593,6 +593,40 @@ class ProcessingCoordinator:
         with self.analysis_lock:
             return self.camera_analysis.get(camera_id)
 
+    def get_latest_frame(self, camera_id: int) -> Optional[tuple]:
+        """
+        Get the latest raw video frame for a camera along with its active detections.
+        
+        This method is called by the WebSocket streaming endpoints to retrieve
+        the current frame and detection data for real-time frontend rendering.
+        
+        Args:
+            camera_id: Camera identifier
+            
+        Returns:
+            Tuple of (frame: np.ndarray, detections: List[Dict]) or None if unavailable.
+            Detections are dicts with keys: track_id, class_name, confidence, bbox.
+        """
+        try:
+            # 1. Get latest frame from the stream ingestion queue (non-blocking)
+            frame_data = self.stream_ingestion.get_frame(camera_id, timeout=0.05)
+            if frame_data is None:
+                return None
+            frame, _ = frame_data
+            
+            # 2. Get latest detections from analysis cache
+            detections = []
+            with self.analysis_lock:
+                analysis = self.camera_analysis.get(camera_id)
+                if analysis:
+                    detections = analysis.get('detections', [])
+            
+            return (frame, detections)
+        
+        except Exception as e:
+            logger.error(f"Error in get_latest_frame for camera {camera_id}: {e}")
+            return None
+
     def get_speed_stats(self) -> Dict:
         """Get speed statistics across all cameras"""
         return self.speed_height_analyzer.get_speed_stats()

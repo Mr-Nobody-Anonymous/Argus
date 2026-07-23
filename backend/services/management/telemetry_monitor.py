@@ -131,13 +131,19 @@ class TelemetryMonitor:
     def _load_config(self):
         """Load configuration — wrapped in try/except for import safety."""
         try:
-            from config.config import get_config
+            from ...config.config import get_config
 
             self._config = get_config()
             self._telemetry_config = getattr(self._config, "telemetry", None)
         except Exception as e:
-            logger.warning(f"Could not load telemetry config: {e}")
-            self._telemetry_config = None
+            # Fallback to absolute import
+            try:
+                from backend.config.config import get_config
+                self._config = get_config()
+                self._telemetry_config = getattr(self._config, "telemetry", None)
+            except Exception as e2:
+                logger.warning(f"Could not load telemetry config: {e2}")
+                self._telemetry_config = None
 
     def _init_psutil(self):
         """Initialize psutil — local import for zero-leak safety."""

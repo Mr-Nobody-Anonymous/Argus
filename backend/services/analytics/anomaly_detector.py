@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from collections import deque
 from datetime import datetime
 import json
-from backend.config.config import get_config, section_to_dict
-from backend.database.db import get_db
+from ...config.config import get_config, section_to_dict
+from ...database.db import get_db
 
 try:
     import cv2

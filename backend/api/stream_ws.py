@@ -2,8 +2,10 @@
 WebSocket endpoint for real-time video streaming with AI overlays
 Provides smooth video feed with bounding box overlays to frontend
 """
+import asyncio
 import json
 import base64
+import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -26,7 +28,7 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
     await websocket.accept()
     
     try:
-        from services.core_engine.processing_coordinator import get_processing_coordinator
+        from backend.services.core_engine.processing_coordinator import get_processing_coordinator
         
         while True:
             try:
@@ -38,17 +40,17 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
                     frame, detections = frame_data
                     
                     # Encode frame as JPEG
-                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMMEDIATE_QUALITY, 85])
+                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     frame_bytes = buffer.tobytes()
                     
                     # Send as binary message
                     await websocket.send_bytes(frame_bytes)
                     
-                    # Send detection metadata as JSON
-                    detection_data = {
-                        "camera_id": camera_id,
-                        "detections": [
-                            {
+                    # Send detection metadata as JSON (handle both dict and object detections)
+                    detection_list = []
+                    for d in detections:
+                        if hasattr(d, 'track_id'):
+                            detection_list.append({
                                 "track_id": d.track_id,
                                 "class": d.class_name,
                                 "confidence": d.confidence,
@@ -58,19 +60,35 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
                                     "x2": d.bbox[2],
                                     "y2": d.bbox[3]
                                 }
-                            }
-                            for d in detections
-                        ],
-                        "timestamp": frame_data.get("timestamp")
-                    }
-                    await websocket.send_json(detection_data)
+                            })
+                        elif isinstance(d, dict):
+                            bbox = d.get('bbox', [0, 0, 0, 0])
+                            detection_list.append({
+                                "track_id": d.get('track_id', 0),
+                                "class": d.get('class_name', 'unknown'),
+                                "confidence": d.get('confidence', 0.0),
+                                "bbox": {
+                                    "x1": bbox[0] if isinstance(bbox, (list, tuple)) else 0,
+                                    "y1": bbox[1] if isinstance(bbox, (list, tuple)) else 0,
+                                    "x2": bbox[2] if isinstance(bbox, (list, tuple)) else 0,
+                                    "y2": bbox[3] if isinstance(bbox, (list, tuple)) else 0
+                                }
+                            })
+                    
+                    await websocket.send_json({
+                        "camera_id": camera_id,
+                        "detections": detection_list,
+                        "timestamp": str(time.time())
+                    })
+                else:
+                    await websocket.send_json({"camera_id": camera_id, "detections": [], "timestamp": str(time.time())})
                 
                 await asyncio.sleep(1/30)  # 30 FPS stream
                 
             except WebSocketDisconnect:
                 break
             except Exception as e:
-                await websocket.send_json({"error": str(e)})
+                await websocket.send_json({"error": str(e), "camera_id": camera_id, "detections": []})
                 await asyncio.sleep(0.1)
                 
     except Exception as e:
@@ -84,7 +102,7 @@ async def mjpeg_stream(camera_id: int):
     """
     async def generate():
         try:
-            from services.core_engine.processing_coordinator import get_processing_coordinator
+            from backend.services.core_engine.processing_coordinator import get_processing_coordinator
             
             while True:
                 coordinator = get_processing_coordinator()
@@ -104,6 +122,3 @@ async def mjpeg_stream(camera_id: int):
             pass
     
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
-
-
-import asyncio  # Add at top after imports

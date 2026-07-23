@@ -1,96 +1,68 @@
 """
-WebSocket streaming routes for City OS
-Integrates with FastAPI main application
+Stream routes for snapshot retrieval and MJPEG fallback.
+WebSocket streaming is consolidated in stream_ws.py to avoid endpoint conflicts.
 """
 import asyncio
-import json
 import cv2
-import os
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from services.core_engine.processing_coordinator import get_processing_coordinator
-from services.management.user_attention_tracker import get_user_attention_tracker
+from pathlib import Path
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 
 router = APIRouter()
 
-# Configuration from environment
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "85"))
-
-# Track active connections
-active_connections: dict[int, list] = {}
+# Path to snapshots directory
+SNAPSHOT_DIR = Path("data/snapshots")
 
 
-@router.websocket("/ws/stream/{camera_id}")
-async def websocket_stream(websocket: WebSocket, camera_id: int):
+@router.get("/snapshots/{camera_id}/{filename}")
+async def get_snapshot(camera_id: int, filename: str):
     """
-    WebSocket endpoint for real-time video streaming with AI overlays.
-    Sends binary JPEG frames + JSON detection metadata.
-    Registers/unregisters viewport attention with UserAttentionTracker.
+    Retrieve a saved snapshot image for a given camera and event.
+    Files are stored as: cam{camera_id}_{rule_type}_{timestamp}.jpg
     """
-    await websocket.accept()
+    # Sanitize filename to prevent path traversal
+    safe_filename = Path(filename).name
+    filepath = SNAPSHOT_DIR / safe_filename
 
-    # ── Register active stream with attention tracker ──
-    attention_tracker = get_user_attention_tracker()
-    attention_tracker.register_active_stream(camera_id)
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
 
-    if camera_id not in active_connections:
-        active_connections[camera_id] = []
-    active_connections[camera_id].append(websocket)
+    return FileResponse(str(filepath), media_type="image/jpeg")
 
-    try:
-        while True:
-            coordinator = get_processing_coordinator()
-            frame_data = coordinator.get_latest_frame(camera_id)
 
-            if frame_data:
-                frame, detections = frame_data
+@router.get("/mjpeg/stream/{camera_id}")
+async def mjpeg_stream(camera_id: int):
+    """
+    MJPEG streaming endpoint as a fallback for environments where
+    WebSocket is unavailable.
+    """
+    async def generate():
+        try:
+            from services.core_engine.processing_coordinator import get_processing_coordinator
 
-                # Encode as JPEG (fast binary transmission)
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-                frame_bytes = buffer.tobytes()
+            while True:
+                coordinator = get_processing_coordinator()
+                frame_data = coordinator.get_latest_frame(camera_id)
 
-                # Send binary frame
-                await websocket.send_bytes(frame_bytes)
+                if frame_data:
+                    frame = frame_data[0]
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    frame_bytes = buffer.tobytes()
 
-                # Process detections efficiently
-                detection_list = []
-                for i, d in enumerate(detections):
-                    if d:
-                        detection_list.append({
-                            "track_id": getattr(d, 'track_id', i),
-                            "class": getattr(d, 'class_name', 'unknown'),
-                            "confidence": float(getattr(d, 'confidence', 0)),
-                            "bbox": getattr(d, 'bbox', [0, 0, 0, 0])
-                        })
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-                # Send detection metadata
-                await websocket.send_json({
-                    "camera_id": camera_id,
-                    "detections": detection_list,
-                    "timestamp": frame_data.get("timestamp")
-                })
-            else:
-                # Send empty frame to keep connection alive
-                await websocket.send_json({"camera_id": camera_id, "detections": []})
+                await asyncio.sleep(1/30)
 
-            await asyncio.sleep(1/30)  # 30 FPS stream
+        except Exception:
+            pass
 
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        pass
-    finally:
-        # ── Unregister active stream with attention tracker ──
-        attention_tracker.unregister_active_stream(camera_id)
-
-        # Guaranteed cleanup regardless of how loop exits
-        if camera_id in active_connections:
-            if websocket in active_connections[camera_id]:
-                active_connections[camera_id].remove(websocket)
-            if not active_connections[camera_id]:
-                del active_connections[camera_id]
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace;boundary=frame"
+    )
 
 
 def register_routes(app):
-    """Register WebSocket routes with FastAPI app."""
+    """Register all stream routes with FastAPI app."""
     app.include_router(router)

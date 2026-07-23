@@ -25,9 +25,9 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config.config import get_config
-from vision.face_recognition import get_face_recognition
-from core_engine.consortium_broker import (
+from backend.config.config import get_config
+from .face_recognition import get_face_recognition
+from ..core_engine.consortium_broker import (
     AgentBid,
     ConsortiumBroker,
     ResourceAllocation,

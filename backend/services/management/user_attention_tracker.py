@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, List
 
-from config.config import get_config
+from ...config.config import get_config
 
 logger = logging.getLogger(__name__)
 

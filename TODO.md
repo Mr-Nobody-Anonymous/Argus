@@ -18,3 +18,16 @@
 ## ✅ Step 16: Remove empty `core/` directory
 ## ✅ Step 17: Clean up and verify - remove core/ if still exists, verify all files
 
+---
+
+## ✅ Recent Import Fixes (Completed)
+
+### Fixed Broken Relative Imports
+| # | File | Original Import | Fixed Import |
+|---|------|----------------|--------------|
+| ✅ | `backend/services/management/telemetry_monitor.py` | `from config.config import get_config` | `from ...config.config import get_config` (with fallback) |
+| ✅ | `backend/services/management/state_recovery_manager.py` | `from config.config import get_config` | `from ...config.config import get_config` |
+| ✅ | `backend/services/management/user_attention_tracker.py` | `from config.config import get_config` | `from ...config.config import get_config` |
+| ✅ | `backend/services/core_engine/evolutionary_engine.py` | `from config.config import get_config` + `from management.event_store import get_event_store` | `from ...config.config import get_config` + `from ..management.event_store import get_event_store` |
+| ✅ | `backend/services/core_engine/logic_mutator.py` | `from config.config import get_config` | `from ...config.config import get_config` |
+

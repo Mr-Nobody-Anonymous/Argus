@@ -26,9 +26,9 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config.config import get_config
-from core_engine.inference_engine import get_inference_engine
-from core_engine.consortium_broker import (
+from backend.config.config import get_config
+from .inference_engine import get_inference_engine
+from .consortium_broker import (
     AgentBid,
     ConsortiumBroker,
     ResourceAllocation,

@@ -33,8 +33,8 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-from backend.config.config import get_config
-from backend.database.db import get_db
+from ...config.config import get_config
+from ...database.db import get_db
 
 logger = logging.getLogger(__name__)
 
