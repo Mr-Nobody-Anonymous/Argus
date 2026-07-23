@@ -1,5 +1,5 @@
 <div align="center">
-<img src="assets/images.png" alt="Argus - The Watchful Guardian" width="400"/>
+<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/assets/images.png" alt="Argus - The Watchful Guardian" width="400"/>
 </div>
 
 <h1 align="center">
