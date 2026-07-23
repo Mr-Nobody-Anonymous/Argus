@@ -48,3 +48,6 @@ pytorchvideo==0.1.5
 scikit-learn==1.4.2
 statsmodels==0.14.1
 torchmetrics==1.4.0
+
+# Generative-Evolutionary Cognition Engine
+deap==1.4.1

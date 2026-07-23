@@ -19,27 +19,27 @@ import numpy as np
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.api.models import (
+from api.models import (
     Camera, CameraCreate, CameraUpdate,
     Zone, ZoneCreate,
     Event,
     HealthResponse, MetricsResponse
 )
-from backend.services.camera_manager import get_camera_manager
-from backend.services.zone_manager import get_zone_manager
-from backend.services.event_store import get_event_store
-from backend.services.processing_coordinator import get_processing_coordinator
-from backend.services.inference_engine import get_inference_engine
-from backend.services.mqtt_publisher import get_mqtt_publisher
-from backend.services.image_enhancement import get_image_enhancement
-from backend.services.face_recognition import get_face_recognition
-from backend.services.license_plate_recognition import get_license_plate_recognition
-from backend.services.anomaly_detector import get_anomaly_detector
-from backend.services.pose_estimator import get_pose_estimator
-from backend.services.deep_tracker import get_deep_tracker
-from backend.services.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
-from backend.database.db import get_db, close_db
-from backend.config.config import get_config
+from services.management.camera_manager import get_camera_manager
+from services.management.zone_manager import get_zone_manager
+from services.management.event_store import get_event_store
+from services.core_engine.processing_coordinator import get_processing_coordinator
+from services.core_engine.inference_engine import get_inference_engine
+from services.management.mqtt_publisher import get_mqtt_publisher
+from services.vision.image_enhancement import get_image_enhancement
+from services.vision.face_recognition import get_face_recognition
+from services.vision.license_plate_recognition import get_license_plate_recognition
+from services.analytics.anomaly_detector import get_anomaly_detector
+from services.vision.pose_estimator import get_pose_estimator
+from services.core_engine.deep_tracker import get_deep_tracker
+from services.analytics.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
+from database.db import get_db, close_db
+from config.config import get_config
 
 # Configure logging
 logging.basicConfig(

@@ -42,7 +42,7 @@ class VideoPipeline:
         self.stream_flags: Dict[int, threading.Event] = {}
         
         # Camera managers
-        from backend.services.camera_manager import get_camera_manager
+        from backend.services.management.camera_manager import get_camera_manager
         self.camera_manager = get_camera_manager()
         
         # Performance tracking

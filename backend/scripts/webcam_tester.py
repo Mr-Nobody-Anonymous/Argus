@@ -12,12 +12,12 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from backend.services.inference_engine import get_inference_engine
-from backend.services.image_enhancement import get_image_enhancement
-from backend.services.speed_height_analysis import get_speed_height_analyzer
-from backend.config.config import get_config
+from services.core_engine.inference_engine import get_inference_engine
+from services.vision.image_enhancement import get_image_enhancement
+from services.analytics.speed_height_analysis import get_speed_height_analyzer
+from config.config import get_config
 
 # Try to import optional emotion detection
 try:
@@ -81,7 +81,7 @@ class WebcamTester:
         # Step 3: Face Detection & Recognition
         face_results = []
         try:
-            from backend.services.face_recognition import get_face_recognition
+            from services.vision.face_recognition import get_face_recognition
             face_recognition = get_face_recognition()
             if face_recognition.enabled and face_recognition.is_initialized():
                 face_results = face_recognition.recognize_faces(enhanced_frame, detect_emotions=True)
@@ -179,7 +179,7 @@ class WebcamTester:
             
             # Get face recognition results
             try:
-                from backend.services.face_recognition import get_face_recognition
+                from services.vision.face_recognition import get_face_recognition
                 face_recognition = get_face_recognition()
                 face_results = []
                 if face_recognition.enabled and face_recognition.is_initialized():

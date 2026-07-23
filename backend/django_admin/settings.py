@@ -3,7 +3,7 @@ Django settings for Argus admin interface
 """
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent.parent.parent
+BASE_DIR = Path(__file__).parent.parent.parent.parent
 
 SECRET_KEY = "django-insecure-argus-admin-key-change-in-production"
 DEBUG = True

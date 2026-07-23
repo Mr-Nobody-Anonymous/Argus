@@ -8,7 +8,7 @@ import time
 import logging
 from datetime import datetime
 from typing import Dict, Optional
-from backend.services.camera_manager import get_camera_manager
+from backend.services.management.camera_manager import get_camera_manager
 
 logger = logging.getLogger(__name__)
 

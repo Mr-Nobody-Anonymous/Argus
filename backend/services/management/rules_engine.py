@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 from collections import defaultdict
-from backend.services.zone_manager import get_zone_manager
-from backend.services.event_store import get_event_store
-from backend.services.inference_engine import get_inference_engine
+from backend.services.management.zone_manager import get_zone_manager
+from backend.services.management.event_store import get_event_store
+from backend.services.core_engine.inference_engine import get_inference_engine
 from backend.config.config import get_config
 
 logger = logging.getLogger(__name__)

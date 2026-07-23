@@ -26,7 +26,7 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
     await websocket.accept()
     
     try:
-        from backend.services.processing_coordinator import get_processing_coordinator
+        from services.core_engine.processing_coordinator import get_processing_coordinator
         
         while True:
             try:
@@ -84,7 +84,7 @@ async def mjpeg_stream(camera_id: int):
     """
     async def generate():
         try:
-            from backend.services.processing_coordinator import get_processing_coordinator
+            from services.core_engine.processing_coordinator import get_processing_coordinator
             
             while True:
                 coordinator = get_processing_coordinator()

@@ -33,7 +33,7 @@ echo Starting webcam tester...
 echo Press 'q' in the video window to quit
 echo.
 
-python webcam_tester.py --camera 0
+python backend/scripts/webcam_tester.py --camera 0
 
 echo.
 echo Webcam tester stopped.
