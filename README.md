@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/images.png" alt="Argus - The Watchful Guardian" width="400">
+<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/images.png" alt="Argus - The Watchful Guardian" width="400">
 </div>
 
 <h1 align="center">
@@ -118,52 +118,52 @@ npm run dev            # Serves on http://localhost:3000
 
 ```
 ┌──────────────┐     ┌─────────────────┐     ┌──────────────────────────────┐
-│  RTSP Camera │────▶│ stream_ingestion │────▶│   ProcessingCoordinator      │
-│  / Webcam    │     │ (cv2.VideoCapture│     │  (swarm OR fallback loop)    │
-└──────────────┘     │  + frame queue)  │     │                              │
+│  RTSP Camera │───▶│ stream_ingestion │───▶│   ProcessingCoordinator      │
+│  / Webcam    │     │ (cv2.VideoCapture│    │  (swarm OR fallback loop)    │
+└──────────────┘     │  + frame queue)  │    │                              │
                      └─────────────────┘     │  ┌────────────────────────┐  │
-                                             │  │  YOLO Agent (primary) │  │
+                                             │  │  YOLO Agent (primary)  │  │
                                              │  │  → detections [dict]   │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  DeepTracker            │  │
-                                             │  │  → Kalman filter        │  │
-                                             │  │  → persistent track IDs │  │
+                                             │  │  DeepTracker           │  │
+                                             │  │  → Kalman filter       │  │
+                                             │  │  → persistent track IDs│  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  LogicMutator           │  │
-                                             │  │  → sandboxed rule filter│  │
+                                             │  │  LogicMutator          │  │
+                                             │  │  →sandboxed rule filter│  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  Consortium Broker      │  │
-                                             │  │  → post context         │  │
-                                             │  │  → resolve agent bids   │  │
+                                             │  │  Consortium Broker     │  │
+                                             │  │  → post context        │  │
+                                             │  │  → resolve agent bids  │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  Face Agent (cond.)     │  │
-                                             │  │  LPR Agent (cond.)      │  │
+                                             │  │  Face Agent (cond.)    │  │
+                                             │  │  LPR Agent (cond.)     │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  PoseEstimator          │  │
-                                             │  │  AnomalyDetector        │  │
-                                             │  │  SpeedHeightAnalyzer    │  │
+                                             │  │  PoseEstimator         │  │
+                                             │  │  AnomalyDetector       │  │
+                                             │  │  SpeedHeightAnalyzer   │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  RulesEngine             │  │
-                                             │  │  → zone checks           │  │
-                                             │  │  → event generation      │  │
+                                             │  │  RulesEngine           │  │
+                                             │  │  → zone checks         │  │
+                                             │  │  → event generation    │  │
                                              │  └───────────┬────────────┘  │
                                              └──────────────┼───────────────┘
                                                             ▼
                            ┌─────────────────────────────────────────────┐
                            │         camera_analysis cache               │
-                           │  (detections, face, lpr, pose, anomalies)    │
+                           │  (detections, face, lpr, pose, anomalies)   │
                            └──────────┬──────────────────────┬───────────┘
                                       ▼                      ▼
                            ┌──────────────────┐   ┌──────────────────────┐
@@ -172,10 +172,10 @@ npm run dev            # Serves on http://localhost:3000
                            └──────────────────┘   └──────────┬───────────┘
                                                              ▼
                                                   ┌──────────────────────┐
-                                                  │  LiveVideoPlayer.jsx  │
-                                                  │  → canvas overlays    │
+                                                  │  LiveVideoPlayer.jsx │
+                                                  │  → canvas overlays   │
                                                   │  → bboxes + labels   │
-                                                  │  → zone polygons      │
+                                                  │  → zone polygons     │
                                                   └──────────────────────┘
 ```
 
