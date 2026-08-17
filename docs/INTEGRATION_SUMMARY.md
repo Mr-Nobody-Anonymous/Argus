@@ -1,5 +1,37 @@
 # Argus Forked Repositories Integration Summary
 
+> **Status note (current).** This document records which upstream projects
+> inspired or supplied each capability. Two things have changed since it was
+> written:
+>
+> 1. **File paths.** Services moved into subpackages: `backend/services/vision/`
+>    (face, LPR, pose, enhancement), `backend/services/core_engine/` (inference,
+>    tracking, agents), `backend/services/analytics/` (Re-ID, anomaly, speed),
+>    `backend/services/management/` (rules, zones, events, retention, audit).
+>    So `backend/services/deep_tracker.py` is now
+>    `backend/services/core_engine/deep_tracker.py`, and so on.
+> 2. **Heavy dependencies are optional and mostly absent.** The system runs
+>    without PaddleOCR, MediaPipe, InsightFace, and `opencv-contrib`, falling
+>    back to lighter implementations and logging which fallback is active at
+>    startup. See the compatibility table below.
+>
+> For what is actually verified working, see the Project Status table in the
+> [README](../README.md).
+
+## Current dependency reality
+
+| Capability | Ideal dependency | Installed by default | Fallback in use |
+|---|---|---|---|
+| License plate OCR | PaddleOCR | ❌ | Basic OCR heuristics |
+| Face matching | `opencv-contrib` (LBPH) / InsightFace | ❌ | Haar cascade + histogram matching |
+| Pose estimation | MediaPipe (33 keypoints) | ❌ | Geometric fallback |
+| Object detection | Ultralytics YOLOv8 | ✅ | — (`yolov8n.pt` ships in `backend/models/`) |
+| Tracking | ByteTrack/BoT-SORT/DeepSORT | ✅ (own Kalman implementation) | — |
+| Vector DB / streaming | Qdrant, Kafka | ❌ (optional) | Not required for core operation |
+
+`requirements-optional.txt` holds the heavy extras; `requirements.txt` is the
+minimum needed to run the platform.
+
 ## Overview
 This document summarizes the integration of forked repositories into the Argus AI Video Analytics Platform.
 
@@ -91,19 +123,19 @@ This document summarizes the integration of forked repositories into the Argus A
 
 ## New Service Files Created
 
-| File | Description |
+| File (current path) | Description |
 |------|-------------|
-| `license_plate_recognition.py` | License plate detection & OCR |
-| `anomaly_detector.py` | Motion & behavior anomaly detection |
-| `person_reid.py` | Cross-camera person re-identification |
-| `deep_tracker.py` | Advanced object tracking with Kalman filters |
-| `pose_estimator.py` | Human pose estimation & fall detection |
+| `backend/services/vision/license_plate_recognition.py` | License plate detection & OCR |
+| `backend/services/analytics/anomaly_detector.py` | Motion & behavior anomaly detection |
+| `backend/services/analytics/person_reid.py` | Cross-camera person re-identification |
+| `backend/services/core_engine/deep_tracker.py` | Object tracking with Kalman filters + two-stage association |
+| `backend/services/vision/pose_estimator.py` | Human pose estimation & fall detection |
 
 ## Updated Files
 
 | File | Changes |
 |------|---------|
-| `backend/requirements.txt` | Added paddleocr, mediapipe, anomalib, pytorchvideo |
+| `requirements.txt` / `requirements-optional.txt` | Core deps split from heavy optional extras (paddleocr, mediapipe, anomalib, pytorchvideo, django, kafka, qdrant) |
 | `docker-compose.yml` | Added Qdrant and Kafka services |
 | `config/config.yaml` | Added LPR, anomaly, reid, tracker, pose configurations |
 | `backend/api/main.py` | Added LPR, anomaly, and tracker endpoints |

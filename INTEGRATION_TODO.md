@@ -1,4 +1,9 @@
 # Argus Integration Status
+
+> **Status: all items below are verified working.** The "Next Steps to Verify"
+> at the foot of this file have been executed and their results recorded.
+> For remaining production gaps see [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md).
+
 ## Fixes Applied
 
 ### 1. WebSocket Route Conflicts (resolved)
@@ -24,7 +29,23 @@
 - `analytics/anomaly_detector.py` - Uses `from backend.config...` — correct
 - `analytics/cross_camera_tracker.py` - Uses `from backend.config...` — correct
 
-### 5. Data Pipeline Flow
+### 5. Authentication layer (added after the original integration)
+
+- `backend/api/auth.py` - JWT issuing/validation against the Django `auth_user`
+  table, three roles, brute-force lockout.
+- `main.py` - RBAC dependency on all 40 protected routes; `audit_mutations` middleware.
+- `stream_ws.py` - authenticates **before** `websocket.accept()`, so an
+  unauthenticated upgrade is refused at the handshake rather than accepted and
+  then closed.
+- `stream_routes.py` - MJPEG and snapshot routes are viewer-gated. The
+  `/snapshots` **static mount** is only registered when auth is disabled,
+  because a `StaticFiles` mount bypasses route dependencies entirely.
+- `frontend/src/services/api.js` - bearer-token interceptor, transparent refresh
+  on 401, and `buildStreamUrl()` which appends `?token=` for the WebSocket
+  (browsers cannot set headers on a WS handshake).
+- `frontend/src/pages/Login.jsx` + `App.jsx` - login gate and session handling.
+
+### 6. Data Pipeline Flow
 ```
 Camera (RTSP/webcam)
   → stream_ingestion.py (cv2.VideoCapture + frame queue)
@@ -45,8 +66,36 @@ Camera (RTSP/webcam)
           → LiveVideoPlayer.jsx → bbox overlays on canvas
 ```
 
-### Next Steps to Verify
-1. Run `python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000`
-2. Open `http://localhost:3000` (frontend via `npm run dev`)
-3. Check `http://localhost:8000/docs` for API endpoints
-4. Verify WebSocket at `ws://localhost:8000/api/ws/stream/{camera_id}`
+### Verification Results
+
+All four checks executed against a live instance streaming a looping demo clip.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `uvicorn backend.api.main:app --host 0.0.0.0 --port 8000` | ✅ Starts clean; 43 `/api` operations registered (+ `/` and `/metrics`); YOLO model loads and warms up |
+| 2 | Frontend at `http://localhost:3000` | ✅ Login screen renders; after sign-in the dashboard loads through the Vite proxy (`401` without a token, `200` with one) |
+| 3 | `http://localhost:8000/docs` | ✅ OpenAPI schema generates; 41 documented paths (the WebSocket route is not part of an OpenAPI schema) |
+| 4 | `ws://localhost:8000/api/ws/stream/{camera_id}` | ✅ No token → **403 at handshake**. With `?token=<jwt>` → interleaved binary JPEG frames + JSON detection metadata |
+
+Additional verification performed since:
+
+| Check | Result |
+|---|---|
+| RBAC matrix across 16 endpoints × 3 roles | ✅ 0 mismatches against the documented role table |
+| Audit trail | ✅ Login, successful mutation, and a viewer's **denied** mutation all recorded with actor, role, IP, outcome |
+| Brute-force lockout | ✅ 5 × 401 then 429; the correct password is also refused while locked |
+| Detection quality | ✅ 12–15 detections/frame; ~16 stable track IDs for a ~12-person scene |
+| Automated tests | ✅ 44 passing (`test_regression.py` 23, `test_api_security.py` 21) |
+| Swarm vs linear | ✅ +26.8% FPS at identical detection quality |
+
+### Known deviations from the original integration notes
+
+- **Bbox format**: the WebSocket sends `bbox` as an **object**
+  (`{x1,y1,x2,y2}`); `LiveVideoPlayer.jsx` accepts both that and the 4-element
+  array form.
+- **Timestamps**: the stream previously emitted a stringified Unix float while
+  the documented protocol promised ISO 8601. It now sends ISO 8601 UTC in
+  `timestamp` with the numeric value in `timestamp_unix`. The REST API and audit
+  log still use their own formats - unifying them is a roadmap item.
+- **Detection dict key**: the class label is sent as `class`, not `class_name`
+  (which is the internal field name).

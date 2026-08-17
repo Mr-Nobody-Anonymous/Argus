@@ -7,6 +7,7 @@ import json
 import base64
 import logging
 import time
+from datetime import datetime, timezone
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -16,6 +17,12 @@ from typing import Optional
 from backend.api.auth import authenticate_websocket, require_role, ROLE_VIEWER
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    """Current UTC time as an ISO 8601 string with a trailing Z."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 router = APIRouter()
 
@@ -117,10 +124,19 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
                     await websocket.send_json({
                         "camera_id": camera_id,
                         "detections": detection_list,
-                        "timestamp": str(time.time())
+                        # ISO 8601 UTC, matching the documented protocol and the
+                        # REST API. A stringified Unix float forced every client
+                        # to special-case this one endpoint.
+                        "timestamp": _utc_now_iso(),
+                        "timestamp_unix": time.time(),
                     })
                 else:
-                    await websocket.send_json({"camera_id": camera_id, "detections": [], "timestamp": str(time.time())})
+                    await websocket.send_json({
+                        "camera_id": camera_id,
+                        "detections": [],
+                        "timestamp": _utc_now_iso(),
+                        "timestamp_unix": time.time(),
+                    })
                 
                 await asyncio.sleep(1/30)  # 30 FPS stream
                 

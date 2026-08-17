@@ -1,5 +1,10 @@
 # Research & Best Practices - Argus
 
+> **Status: research record, with delivery status added.** The platform analysis
+> below is unchanged. The "Next Steps" roadmap has been annotated with what was
+> actually built. Current gap tracking lives in
+> [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md).
+
 ## Executive Summary
 
 This document outlines the research conducted on 4 leading video management and analytics platforms, the features adopted from each, and the rationale behind architectural decisions for Argus.
@@ -205,7 +210,18 @@ argus/status/{camera_id}
 
 ---
 
-## Next Steps (2-Week Roadmap)
+## Next Steps (2-Week Roadmap) — with delivery status
+
+| Item | Status |
+|---|---|
+| PostgreSQL migration | ⬜ Not started — still SQLite (roadmap §3.7) |
+| GPU acceleration (TensorRT) | ⬜ Not started (roadmap §3.2) |
+| WebSocket real-time updates | ✅ **Done** — authenticated binary JPEG + JSON stream |
+| Multi-model support | ✅ **Done** — face recognition, LPR, and pose run as swarm agents |
+| JWT authentication | ✅ **Done** — HS256 against the Django `auth_user` table |
+| RBAC | ✅ **Done** — viewer/operator/admin enforced on all 40 protected routes |
+| Clip recording | ⬜ Not started — video ring buffer specified in roadmap §3.6 |
+| GUI zone editor | ⬜ Not started — zones are still JSON coordinates |
 
 ### Week 1: Performance & Scalability
 
@@ -247,11 +263,40 @@ argus/status/{camera_id}
 
 ## Lessons Learned
 
+### From the research phase
+
 1. **Start with Research**: Studying existing platforms saved 20+ hours of design iteration
 2. **Privacy is a Feature**: Local processing is a competitive advantage, not a limitation
 3. **Operator-Centric Design**: Features should reduce cognitive load, not add complexity
 4. **Event-Centric > Video-Centric**: Storage and search efficiency justify the trade-off
 5. **Modularity Enables Scaling**: Separated services allow independent optimization
+
+### From actually running it
+
+These were learned the expensive way, by debugging a system that reported
+`healthy` while producing wrong output.
+
+6. **Never conflate "not measured" with "measured as zero".** A skipped frame
+   returning an empty detection list is indistinguishable, downstream, from an
+   empty scene. Several of the worst bugs shared this exact shape — and a silent
+   replay of the *previous* result is just as bad, because the numbers look
+   plausible while being stale.
+7. **A performance number without a quality number is not a result.** The swarm
+   benchmark initially showed +45% throughput; the pipeline was simply detecting
+   35% fewer objects. Always report throughput and accuracy side by side.
+8. **Instrument before you optimise.** Adding `/metrics` exposed two significant
+   bugs within a minute — 74 tracks for a twelve-person scene, and hundreds of
+   duplicate events — that repeated code review had walked straight past.
+9. **An optimiser you cannot benchmark is indistinguishable from a bug.** The
+   swarm layer was the most novel part of the system and the least justified,
+   until it was measured against a baseline.
+10. **Test at the rate the system actually runs.** Tracking looked perfect on
+    consecutive frames and fell apart at the real ~1 fps processing rate, because
+    IoU association assumes objects overlap between observations.
+11. **Benchmark variants in separate processes.** Module-level singletons carry
+    mutable state between runs and will quietly invert your conclusion.
+12. **One-way parameter ratchets are a trap.** Any adaptive threshold that can
+    only move in one direction will eventually pin itself at the limit.
 
 ---
 
@@ -263,7 +308,14 @@ Argus combines the best practices from 4 industry leaders:
 - **Avigilon's** attention management
 - **Frigate's** privacy-first approach
 
-The result is a production-ready MVP that balances functionality, performance, and privacy while maintaining a clear path to enterprise-scale deployment.
+The result is a working MVP that balances functionality, performance, and
+privacy, with a clear path to enterprise-scale deployment.
+
+It is **not production-ready**, and the distinction matters: auth, RBAC, audit
+logging, retention, and observability are now in place, but TLS, encryption of
+biometric data at rest, PostgreSQL, and CI are not. The honest summary is a
+capable prototype with a documented gap list rather than a finished product —
+see [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md).
 
 ---
 

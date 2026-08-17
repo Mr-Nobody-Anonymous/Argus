@@ -2,6 +2,14 @@
 
 This document provides a comprehensive overview of the Argus AI Video Analytics Platform's directory layout, explaining what each folder and file contains, its purpose, and how it integrates into the pipeline.
 
+> **Currency note.** Kept in step with the code. Files added during the security
+> and observability work — `backend/api/auth.py`, `backend/api/observability.py`,
+> `backend/services/management/audit_log.py`,
+> `backend/services/management/retention.py`, `frontend/src/pages/Login.jsx`, and
+> the `tests/test_*.py` suites — are documented in their respective sections
+> below. Where a subheading shows a bare filename, its directory is given by the
+> section heading above it.
+
 ---
 
 ## 📂 Root Directory
@@ -10,10 +18,13 @@ This document provides a comprehensive overview of the Argus AI Video Analytics 
 |------|-------------|
 | `README.md` | Project overview, quickstart, feature list, API reference, and data pipeline diagram |
 | `FOLDER_STRUCTURE.md` | **This file** — detailed directory documentation, file-by-file |
-| `TODO.md` | Original project restructuring checklist (fully completed) |
+| `TODO.md` | Work log (restructuring, import fixes, 13 pipeline defects, security phase) plus the outstanding-work list |
+| `PRODUCTION_ROADMAP.md` | Production gap analysis — 30 items with priorities, acceptance criteria, and effort estimates; also the post-mortem on the swarm benchmark |
 | `INTEGRATION_TODO.md` | Integration fixes applied: WebSocket route conflict resolution, bbox overlay fixes, zone_alerts dict unification, import verification |
 | `LICENSE` | MIT License |
-| `requirements.txt` | Python backend dependencies (FastAPI, YOLO, OpenCV, PaddleOCR, InsightFace, MediaPipe, scikit-learn, etc.) |
+| `requirements.txt` | Core Python dependencies (FastAPI, ultralytics/YOLO, OpenCV, PyJWT, pytest, …) — version *ranges*, since exact pins were uninstallable on Python 3.13 |
+| `requirements-optional.txt` | Heavy/optional extras (django, paddleocr, mediapipe, kafka, qdrant, elasticsearch). The platform runs without these, using documented fallbacks |
+| `.env.example` | Every `ARGUS_*` environment variable with an explanatory comment |
 | `package.json` | Root-level workspace pointer (frontend is in `frontend/`) |
 | `package-lock.json` | Root dependency lock |
 | `run_app.bat` | Windows launcher — starts uvicorn backend + Vite frontend concurrently |
@@ -47,6 +58,37 @@ The HTTP/WebSocket serving layer. All routes are registered in `main.py` and ava
 
 #### `api/__init__.py`
 Package marker.
+
+#### `api/auth.py`
+**Authentication and authorization.** Issues and validates HS256 JWTs, verifying
+credentials against the **Django `auth_user` table** (`verify_django_password()`
+supports Django's PBKDF2 hash format) so there is no second user store.
+
+- Roles `viewer < operator < admin`, ranked by `_ROLE_RANK`, derived from Django
+  group membership; superuser/staff ⇒ admin; no group ⇒ viewer (least privilege).
+- `create_token` / `decode_token` / `token_to_user`; access and refresh tokens are
+  tagged by type so a refresh token cannot be replayed as an access token.
+- `get_current_user` and `require_role(...)` FastAPI dependencies. **The role is
+  re-read from the database on every request**, so a tampered `role` claim in a
+  token is inert.
+- Brute-force protection: `is_locked_out` / `record_failed_attempt` /
+  `clear_failed_attempts` (5 attempts → 300 s; the correct password is also
+  refused while locked, otherwise the lockout is decorative).
+- `authenticate_websocket()` for query-parameter tokens.
+- `EPHEMERAL_SECRET_IN_USE` flags that no `ARGUS_JWT_SECRET` was set, so a
+  throwaway key is signing tokens and every restart invalidates them.
+
+#### `api/observability.py`
+**Prometheus metrics and structured logging.**
+- `MetricsRegistry.collect()` builds the Prometheus text exposition directly (no
+  client-library dependency) covering uptime, process CPU/memory, per-camera FPS,
+  camera up/down, queue depth, inference latency, model-loaded state, current
+  detections, active tracks, 24h event counts by rule, and security posture.
+  Every collector is individually exception-guarded — a metrics endpoint must
+  never take down the process it is observing.
+- `JsonLogFormatter` + `configure_logging()` implement `ARGUS_LOG_FORMAT=json`,
+  merging any `extra={...}` fields into the JSON object so logs can be filtered
+  by `camera_id` rather than grepped.
 
 #### `api/main.py`
 **Main FastAPI application entry point.** This file:
@@ -215,17 +257,17 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 |---|------|-------------|
 | 1 | `inference_engine.py` | **YOLOv8 object detection.** Loads model from `backend/models/`, warms up with dummy frame, runs `model()` with configurable `conf`/`classes`. Returns list of `{class_id, class_name, confidence, bbox}`. Tracks inference times for performance monitoring (`get_avg_inference_time()`). |
 | 2 | `yolo_detection_agent.py` | **Autonomous YOLO agent.** Wraps `InferenceEngine` as a swarm agent with its own evolutionary gene vector (`YoloGeneVector`). Optimizes `yolo_conf_threshold`, `iou_threshold`, `input_resolution_scale`, `tracker_matching_threshold` via local genetic mutation. Submits bids to `ConsortiumBroker` based on urgency/compute cost/detection rate. Adapts parameters based on broker allocation (throttle reduces resolution/raises threshold). |
-| 3 | `deep_tracker.py` | **Multi-algorithm deep tracker** (ByteTrack/DeepSORT/BoT-SORT). Maintains persistent track IDs across frames using Kalman filter prediction + IoU matching. `update(detections, frame)` → returns detections with `track_id` assigned. Tracks active tracks, manages expired tracks (configurable `track_buffer`). |
+| 3 | `deep_tracker.py` | **Multi-algorithm deep tracker** (ByteTrack/DeepSORT/BoT-SORT). Maintains persistent track IDs using Kalman prediction + **two-stage association**: greedy best-IoU-first, then a fallback on centre distance scaled by object size and gated on class. The second stage exists because the pipeline processes ~1 frame/second on CPU while cameras run at 15–30 fps — at that gap a walking person no longer overlaps their previous box, and IoU-only matching produced 89 IDs for a ~12-person scene (now 16). `update(detections, frame)` → detections with `track_id`. Tuning: `match_threshold`, `max_center_distance`, `track_buffer`. |
 | 4 | `yolo_tracker.py` | **Legacy YOLO tracker** — standalone `YOLOTracker` class with basic feature extraction (color histogram) and simple track assignment. Used as fallback if `deep_tracker` is disabled. |
 | 5 | `multistream_pipeline.py` | **Multi-stream ingestion engine.** `FFmpegCapture` uses FFmpeg subprocess for zero-copy frame reading from RTSP (more efficient than OpenCV). `MultiStreamPipeline` manages up to 8 workers with adaptive frame skipping based on inference latency. Supports MediaMTX-rebroadcast URLs. |
 | 6 | `video_pipeline.py` | **Optimized video pipeline** with separate decode and stream threads per camera. Adaptive frame skipping based on `inference_times` history. Dual-queue architecture: one queue for inference processing, one for WebSocket streaming (JPEG-encoded). |
 | 7 | `processing_coordinator.py` | **Central orchestrator.** The `ProcessingCoordinator` class ties everything together. Runs a per-camera processing loop in daemon threads. Two modes: **swarm mode** (default, asymmetric event-driven) and **linear mode** (classic pipeline fallback). In swarm mode: YOLO agent runs → posts context to broker → broker resolves bids → face/LPR agents run conditionally → pose/anomaly/speed analysis → rules engine → stores in `camera_analysis` cache. Provides `get_latest_frame(camera_id)` for WebSocket streaming (returns `(frame_np, detections_list)` tuple). |
 | 8 | `object_detection_tracker.py` | Legacy integrated detection + tracking pipeline (YOLO + ByteTrack/DeepSORT). |
 | 9 | `object_detection_tracker_refactored.py` | Refactored version with improved architecture, used as reference for swarm migration. |
-| 10 | `consortium_broker.py` | **Decentralised resource auctioneer.** Implements `AgentBid` (urgency, compute_cost, contextual_relevance, current_load) and `ResourceAllocation` (throttle_factor, priority_boost, should_process). Agents post context to a shared blackboard (`post_context()`/`read_context()`). `resolve_cycle()` computes allocations using proportional bidding strategy. |
+| 10 | `consortium_broker.py` | **Decentralised resource auctioneer.** Implements `AgentBid` (urgency, compute_cost, contextual_relevance, current_load) and `ResourceAllocation` (throttle_factor, priority_boost, should_process). Agents post context to a shared blackboard (`post_context()`/`read_context()`). `resolve_cycle()` computes proportional allocations against `_effective_budget_ms()` — actual measured demand when it exceeds the nominal 33 ms GPU-class budget, since a CPU YOLO pass costs ~130 ms. `PRIMARY_MIN_THROTTLE` guarantees the detector (`PRIMARY_AGENT_ID`) is never throttled: everything downstream derives from it, so starving it blinds the system rather than degrading it. Enrichment agents absorb contention instead. |
 | 11 | `evolutionary_engine.py` | **DEAP-based genetic algorithm** that synthesises new detection rules, evaluates fitness (inference speed, tracking accuracy, FP ratio, rule precision), and mutates pipeline parameters. `record_frame_metrics()` collects per-frame telemetry. `get_optimization_vector()` returns best-known gene vector. |
 | 12 | `logic_mutator.py` | **Self-referential logic mutation engine.** Generates Python one-liner filter rules in a sandboxed `eval()` environment (restricted builtins, only `math` imports). Tests rules against cached frames, prunes low-fitness variants. |
-| 13 | `stream_ws.py` | **Duplicate of api/stream_ws.py** (legacy, kept for backward compatibility). |
+| 13 | `stream_ws.py` | **Legacy duplicate of `api/stream_ws.py`.** Not registered by `main.py`; the live WebSocket route comes from `backend/api/stream_ws.py`. Retained for backward compatibility. |
 
 ---
 
@@ -233,12 +275,12 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 
 | # | File | Description |
 |---|------|-------------|
-| 1 | `face_recognition.py` | **Face detection and recognition** using InsightFace/OpenCV. `recognize_faces(frame, detect_emotions=True)` → returns list of `{bbox, person_name, is_known, confidence, emotion}`. `register_face()` stores embeddings of known persons. Loads reference images from `data/known_faces/`. Tracks faces across frames with timeout. |
+| 1 | `face_recognition.py` | **Face detection and recognition.** Uses a Haar cascade for detection; matching uses `cv2.face` LBPH when `opencv-contrib` is installed and falls back to histogram comparison otherwise (logged at startup). `recognize_faces(frame, detect_emotions=True)` → returns list of `{bbox, person_name, is_known, confidence, emotion}`. `register_face()` stores embeddings of known persons. Loads reference images from `data/known_faces/`. Tracks faces across frames with timeout. |
 | 2 | `face_recognition_agent.py` | **Autonomous face recognition agent.** Wraps `FaceRecognition` service with local evolution of `match_distance_threshold`, `min_face_size_px`, `track_timeout_seconds`, `frame_skip_cadence`. Reads context from broker (`human_detected`, `crowd_detected`) to adjust urgency. |
 | 3 | `lpr_agent.py` | **Autonomous LPR agent.** Wraps `LicensePlateRecognition` service with local evolution of `segmentation_threshold`, `min_plate_height_px`, `resolution_downscale`, `detection_confidence`, `ocr_beam_width`. Activates only when broker context shows `vehicle_detected`. |
-| 4 | `license_plate_recognition.py` | **LPR pipeline** using PaddleOCR. `detect_plates(frame, detections)` → returns list of `{plate_text, confidence, bbox}`. Validates plate text against regex patterns (US/EU formats). |
+| 4 | `license_plate_recognition.py` | **LPR pipeline.** Uses PaddleOCR when installed, otherwise basic OCR heuristics (logged at startup). `detect_plates(frame, detections)` → returns list of `{plate_text, confidence, bbox}`. Validates plate text against regex patterns (US/EU formats). |
 | 5 | `image_enhancement.py` | **Image enhancement pipeline.** `enhance_frame(frame, mode="auto")` applies CLAHE, denoising (Non-local Means), sharpening, night vision, deblur, and HDR based on detected quality issues. `detect_quality_issues()` analyses brightness, contrast, blur, noise. |
-| 6 | `pose_estimator.py` | **Human pose estimation** using MediaPipe Pose. `estimate_pose(frame, bbox)` → returns keypoints (nose, eyes, shoulders, hips, etc.) and detected actions (standing, sitting, lying/fall). `get_pose_statistics()` returns aggregated metrics. |
+| 6 | `pose_estimator.py` | **Human pose estimation.** Uses MediaPipe Pose when installed, otherwise a geometric fallback (logged at startup). `estimate_pose(frame, bbox)` → returns keypoints (nose, eyes, shoulders, hips, etc.) and detected actions (standing, sitting, lying/fall). `get_pose_statistics()` returns aggregated metrics. |
 
 ---
 
@@ -261,7 +303,7 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 | 1 | `camera_manager.py` | **Camera CRUD.** `create_camera()` → INSERT into `cameras` table. `get_all_cameras()` → SELECT all. `update_camera()` → update fields (name, rtsp_url, status, fps). `update_status()` → set online/offline/error + FPS. `delete_camera()` → DELETE cascade. |
 | 2 | `zone_manager.py` | **Zone CRUD + geometry checking.** `create_zone()` validates polygon (≥3 points) / rectangle (2 points). Uses Shapely for `is_point_in_zone()` — point-in-polygon via `Polygon.contains(Point)`, rectangle via min/max bounds. Coordinates stored as JSON. |
 | 3 | `zone_alerts.py` | **Virtual tripwire and geofence monitoring.** `check_zone_crossings()` runs each detection against loaded zones. Supports line (tripwire crossing), polygon (enter/exit), and intrusion (dwell time >30s) zone types. **Now fully compatible with both legacy `Detection` dataclass objects and swarm dict format** via 5 helper functions: `_get_center_from_dict_or_obj()`, `_get_track_id_from_dict_or_obj()`, `_get_class_name_from_dict_or_obj()`, `_get_confidence_from_dict_or_obj()`, `_get_bbox_from_dict_or_obj()`. Uses ray casting for `_point_in_polygon()` and cross-product for `_line_intersection()`. |
-| 4 | `rules_engine.py` | **Zone-based event generation.** `process_detections()` checks each detection against zones for: **intrusion** (object enters restricted zone → high priority event + snapshot), **loitering** (person stays >30s threshold → medium priority event). Uses grid-based object tracking (`center//50` grid cells). 5-second deduplication window. Saves snapshots with bbox overlay + timestamp to `data/snapshots/`. |
+| 4 | `rules_engine.py` | **Zone-based event generation.** `process_detections()` checks each detection against zones for **intrusion** (object enters a restricted zone → high-priority event + snapshot) and **loitering** (person dwells past the threshold → medium-priority event). Both key on the tracker's **persistent track ID**; the previous 50px grid-cell key made every occupied cell its own "subject" while anyone walking between cells never accumulated dwell time. The dedup window **slides** while a condition persists, so an ongoing situation produces one event and re-arms only after real absence (this took a single camera from 209 events per 2 minutes to 108). Saves snapshots with bbox overlay to `data/snapshots/`. |
 | 5 | `event_store.py` | **Event storage and querying.** `create_event()` → INSERT + return with ID. `query_events()` supports filtering by camera_id, time range, rule_type, priority, status, with pagination. `get_event_stats()` returns counts by rule type and priority for last N hours. 30-day retention policy via `delete_old_events()`. |
 | 6 | `mqtt_publisher.py` | **MQTT event publishing.** Uses `paho-mqtt` with async loop. `publish_event(event)` → JSON payload to `argus/events/{camera_id}/{rule_type}`. `publish_camera_status()` → status updates on `argus/status/{camera_id}`. Automatic reconnect with logging. |
 | 7 | `stream_ingestion.py` | **RTSP/webcam stream ingestion.** `_capture_loop()` runs in daemon thread per camera with cv2.VideoCapture. Exponential backoff on failure (up to 10 retries, max 60s wait). Frame queue with maxsize=100 — drops oldest frame if full (prevents memory leak). FPS tracking from last 30 frames. Supports `webcam://{index}` URLs for local camera testing. |
@@ -269,6 +311,8 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 | 9 | `user_attention_tracker.py` | **Viewport attention matrix.** Tracks which cameras are actively viewed by users (`register_active_stream()`/`unregister_active_stream()`). Boosts processing priority for attentively watched cameras (1.5x multiplier for active view, 2.0x for click interaction). Decays unviewed camera priority to 0.3x. |
 | 10 | `state_recovery_manager.py` | **Byzantine fault-tolerant state recovery.** Heartbeat monitoring at 500ms intervals. Consecutive error tracking with configurable threshold (10 errors → recovery mode). Auto-rollback of pipeline parameters to last known good state. Ledger history preserves last 5 stable config snapshots. |
 | 11 | `model_optimizer.py` | **Model optimization service.** ONNX export, FP16 quantization, and TensorRT conversion for faster inference. Manages model versioning and fallback. |
+| 12 | `audit_log.py` | **Tamper-evident audit trail.** Creates the `audit_log` table plus three indexes. `record(...)` writes actor, role, action, resource, client IP, and outcome (`success` / `denied` / `error`), redacting sensitive fields. It **never raises** — a failed audit write must not take down the request path. `query(...)` → `(entries, total)` with filtering, exposed to admins at `GET /api/v1/audit`. |
+| 13 | `retention.py` | **Scheduled data lifecycle.** `run_retention_once()` purges events, snapshots, anomalies, plates, and audit rows on independent per-type schedules; `RetentionScheduler` runs it every `interval_hours` (default 6) and reports its last run and results through `/api/v1/health`. **Face embeddings are deliberately excluded** — deleting biometric enrolments on a timer would silently break recognition, so their lifecycle is a separate, explicit decision. |
 
 ---
 
@@ -294,7 +338,12 @@ A modern React + Vite + Material UI dashboard for real-time video surveillance m
 React entry point — renders `<App />` into DOM.
 
 #### `src/App.jsx`
-**Main application shell** with:
+**Main application shell and auth gate** with:
+- **Authentication gate** — renders `<Login />` until a session exists, then the
+  dashboard shell. The session is restored from `sessionStorage` on mount so a
+  page refresh does not force a re-login while the token is still valid, and it
+  listens for the `argus:unauthenticated` event (emitted by the API client when
+  a token refresh fails) to drop back to the login screen.
 - Dark theme (MUI `createTheme` with black background, cyan accent, gradient app bar)
 - Permanent sidebar drawer (240px) with navigation:
   - `Radar` icon → Dashboard (`/dashboard`)
@@ -302,10 +351,31 @@ React entry point — renders `<App />` into DOM.
   - `Event` icon → Events (`/events`)
   - `Analytics` icon → Analytics (`/analytics`)
 - React Router v6 routing
-- Status chip showing "AI Video Analytics"
+- App bar chip showing the signed-in `username · role`, plus a **Sign out** button
+
+#### `src/pages/Login.jsx`
+**Login screen.** Posts to `/api/v1/auth/login` and stores the returned token
+pair. Distinguishes 401 (bad credentials) from 429 (account locked after 5 failed
+attempts) so the operator is told which is which instead of guessing. Credentials
+are verified server-side against the Django `auth_user` table.
 
 #### `src/services/api.js`
-**Axios API client** with typed endpoint exports:
+**Axios API client, token store, and auth plumbing.**
+
+- `tokenStore` — access token, refresh token, and user identity in
+  **`sessionStorage`** (not `localStorage`): tokens die with the tab rather than
+  lingering on a shared control-room workstation.
+- **Request interceptor** attaches `Authorization: Bearer <token>` to every call.
+- **Response interceptor** performs a transparent refresh on 401 and replays the
+  failed request. Concurrent 401s share a single in-flight refresh so a dashboard
+  polling several endpoints does not stampede the auth endpoint. If the refresh
+  itself fails it clears the session and emits `argus:unauthenticated`.
+- `authAPI` — login, logout, me, currentUser, isAuthenticated.
+- `buildStreamUrl(cameraId)` — builds the WebSocket URL with `?token=`, since
+  browsers cannot set headers on a WS handshake (which is exactly why the backend
+  authenticates *before* `accept()`).
+
+Typed endpoint exports:
 - `cameraAPI` — getAll, getById, create, update, delete
 - `zoneAPI` — getAll (filtered by camera_id), create, update, delete
 - `eventAPI` — getAll (with params: camera_id, from_time, to_time, rule, priority, status, limit, offset), getById, getStats
@@ -371,11 +441,12 @@ React entry point — renders `<App />` into DOM.
 | File | Description |
 |------|-------------|
 | `ARCHITECTURE_BLUEPRINT.md` | System architecture, component diagram, design patterns (singleton, observer, strategy), data flow, deployment topology |
-| `ARCHITECTURE_CITYOS.md` | CityOS smart city integration architecture (Kafka topics, Qdrant collections, Grafana dashboards) |
+| `ARCHITECTURE_CITYOS.md` | CityOS scaling architecture — **a design proposal, not implemented**; the directory layout it describes does not exist in the repo |
 | `DEMO_SCRIPT.md` | Step-by-step demo: 1) Add cameras 2) Create zones 3) Generate events 4) Cross-camera tracking 5) WebSocket stream |
 | `INTEGRATION_SUMMARY.md` | Integration points: MQTT, Kafka, Qdrant, Elasticsearch, Grafana, Django Admin, MediaMTX |
 | `RESEARCH_NOTES.md` | Model benchmarks (YOLOv8 vs YOLOv5, ByteTrack vs DeepSORT), optimal configs, edge cases |
-| `TESTING_GUIDE.md` | Manual + automated test procedures, expected outputs, troubleshooting |
+| `TESTING_GUIDE.md` | The two suites that gate correctness, the swarm benchmark, and which legacy scripts now fail against a secured API |
+| `swarm_benchmark_results.json` | Committed output of the latest swarm vs linear A/B run |
 
 ---
 
@@ -417,6 +488,19 @@ React entry point — renders `<App />` into DOM.
 | `websocket_stress_tester.py` | WebSocket stress test — opens N concurrent connections, measures frames/second received, detection latency, drop rate |
 | `manual/` | Manual testing directory (empty — for ad-hoc test scripts) |
 
+**The two suites that gate correctness** (run with `pytest tests/test_regression.py tests/test_api_security.py -v` — 44 passing):
+
+| File | Description |
+|------|-------------|
+| `test_regression.py` | **23 pipeline-correctness tests.** Kalman state shape and transition-matrix behaviour, greedy IoU matching, track identity at realistic (subsampled) frame rates, primary-detector starvation under contention, skipped-frame semantics, and event deduplication. **Mutation-verified**: reintroducing a real bug makes the relevant test fail with a readable diagnostic. |
+| `test_api_security.py` | **21 auth/RBAC/secret tests.** Includes a static sweep over the live route table asserting every `/api` route outside the public allowlist carries an auth dependency — so a new endpoint cannot silently ship unauthenticated. Also covers forged, expired, and foreign-key-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, and plaintext secrets in `config.yaml`. |
+| `swarm_benchmark.py` | **Swarm vs linear A/B harness.** Runs each variant in a **separate process** (module-level singletons carry mutable state and biased the first in-process attempt badly enough to invert its conclusion). CLI: `--clip`, `--frames`, `--json`, `--camera-id`. Reports FPS, p50/p95 latency, detections/frame, and zero-detection frames — throughput and quality side by side, deliberately. |
+
+> ⚠️ The older scripts above predate authentication and issue unauthenticated
+> requests, so they now receive 401/403 against a secured API. They are
+> diagnostic tools rather than assertions; updating or retiring them is tracked
+> in [TODO.md](TODO.md).
+
 ---
 
 ## 🎨 `assets/` — Static Assets
@@ -433,7 +517,8 @@ React entry point — renders `<App />` into DOM.
 | Directory | Description |
 |-----------|-------------|
 | `data/snapshots/` | Event snapshot images captured by RulesEngine (JPEG, with bbox overlay + timestamp) |
-| `data/argus.db` | SQLite database (cameras, zones, events, behavior_profiles) |
+| `data/argus.db` | SQLite database — Argus tables (cameras, zones, events, behavior_profiles, anomalies, license_plates), the `audit_log` table, and Django's `auth_*` tables (the single source of user identity) |
+| `data/demo_clip.mp4` | Bundled 10-second demo clip (150 frames @ 15 fps). Point a camera at it to exercise the full pipeline without an RTSP source — file sources are paced to their native FPS and loop on EOF |
 | `data/known_faces/` | Reference face images for face recognition (PNG/JPG, one per known person) |
 | `data/qdrant/` | Qdrant vector database persistent storage |
 | `data/kafka/` | Kafka log data (when running Kafka without Docker) |

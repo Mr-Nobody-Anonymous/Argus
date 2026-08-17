@@ -1,5 +1,12 @@
 # 🏗️ AI-Powered CCTV Surveillance Architecture Blueprint
 
+> **Status: architectural reference.** Cross-check any file path against the
+> current layout in the [README](../README.md#-project-structure) — services were
+> reorganised into `core_engine/`, `vision/`, `analytics/`, and `management/`
+> subpackages, and an auth layer (`backend/api/auth.py`) plus observability
+> module (`backend/api/observability.py`) were added after this was written.
+
+
 ## Overview
 This document provides a comprehensive architectural blueprint for integrating FFmpeg MediaMTX, YOLOv8, Kafka, Qdrant, and other components into a production-ready surveillance platform.
 

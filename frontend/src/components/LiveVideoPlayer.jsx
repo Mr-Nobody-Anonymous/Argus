@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { styled } from '@mui/material/styles';
+import { buildStreamUrl } from '../services/api';
 
 const VideoContainer = styled(Box)(({ theme }) => ({
     position: 'relative',
@@ -55,10 +56,11 @@ export default function LiveVideoPlayer({ cameraId, detections: propDetections, 
             // reverse proxy in production) handles the upgrade. Hardcoding
             // localhost breaks every non-local deployment and blocks wss://
             // when the dashboard is served over HTTPS.
-            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(
-                `${wsProtocol}//${window.location.host}/api/ws/stream/${cameraId}`
-            );
+            //
+            // buildStreamUrl appends the JWT as a query parameter: browsers
+            // cannot set an Authorization header on a WebSocket handshake, and
+            // the backend rejects unauthenticated upgrades before accept().
+            const ws = new WebSocket(buildStreamUrl(cameraId));
 
             ws.onopen = () => {
                 if (isMounted) {

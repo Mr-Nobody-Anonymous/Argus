@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import {
@@ -26,12 +26,16 @@ import {
     People,
     Radar,
     Timeline,
+    Logout,
 } from '@mui/icons-material';
+import { Button, Tooltip } from '@mui/material';
 
+import Login from './pages/Login';
 import CameraManagement from './pages/CameraManagement';
 import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
 import SurveillanceDashboard from './pages/SurveillanceDashboard';
+import { authAPI } from './services/api';
 
 const theme = createTheme({
     palette: {
@@ -98,7 +102,7 @@ function NavItem({ to, icon, label }) {
     );
 }
 
-function Shell() {
+function Shell({ user, onLogout }) {
     return (
         <Box sx={{ display: 'flex', minHeight: '100vh' }}>
             <AppBar position="fixed" sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}>
@@ -106,13 +110,25 @@ function Shell() {
                     <Typography variant="h6" noWrap component="div">
                         Argus
                     </Typography>
-                    <Chip
-                        icon={<Shield />}
-                        label="AI Video Analytics"
-                        color="secondary"
-                        variant="outlined"
-                        sx={{ color: 'common.white', borderColor: 'rgba(255,255,255,0.35)' }}
-                    />
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Tooltip title={`Role: ${user?.role || 'unknown'}`}>
+                            <Chip
+                                icon={<Shield />}
+                                label={`${user?.username || 'user'} · ${user?.role || '—'}`}
+                                color="secondary"
+                                variant="outlined"
+                                sx={{ color: 'common.white', borderColor: 'rgba(255,255,255,0.35)' }}
+                            />
+                        </Tooltip>
+                        <Button
+                            size="small"
+                            startIcon={<Logout />}
+                            onClick={onLogout}
+                            sx={{ color: 'common.white' }}
+                        >
+                            Sign out
+                        </Button>
+                    </Box>
                 </Toolbar>
             </AppBar>
 
@@ -169,12 +185,34 @@ function Shell() {
 }
 
 function App() {
+    // Restore the session from sessionStorage so a page refresh does not force a
+    // re-login while the token is still valid.
+    const [user, setUser] = useState(() => authAPI.currentUser());
+
+    const handleLogout = useCallback(() => {
+        authAPI.logout();
+        setUser(null);
+    }, []);
+
+    // The axios interceptor emits this when a refresh fails, which is the only
+    // reliable signal that the session is genuinely over (as opposed to one
+    // request racing an expiry).
+    useEffect(() => {
+        const onUnauthenticated = () => setUser(null);
+        window.addEventListener('argus:unauthenticated', onUnauthenticated);
+        return () => window.removeEventListener('argus:unauthenticated', onUnauthenticated);
+    }, []);
+
     return (
         <ThemeProvider theme={theme}>
             <CssBaseline />
-            <Router>
-                <Shell />
-            </Router>
+            {user ? (
+                <Router>
+                    <Shell user={user} onLogout={handleLogout} />
+                </Router>
+            ) : (
+                <Login onSuccess={setUser} />
+            )}
         </ThemeProvider>
     );
 }

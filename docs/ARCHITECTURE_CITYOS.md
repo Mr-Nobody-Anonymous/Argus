@@ -1,5 +1,28 @@
 # 🏙️ Argus City OS - Tactical Command Center Architecture
 
+> **Status: DESIGN PROPOSAL — not implemented.**
+>
+> This document describes a target architecture for scaling Argus to ~100
+> cameras. **None of the directory structure below exists in the repository**,
+> and the files it recommends deleting are still in active use (they have since
+> been fixed rather than replaced). Read it as a scaling plan, not as a
+> description of the codebase.
+>
+> The shipped architecture is documented in the [README](../README.md);
+> incremental production work is tracked in
+> [PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md), which takes a
+> fix-what-exists approach rather than the rewrite proposed here.
+>
+> **What has actually been done against the concerns raised below:**
+>
+> | Concern raised here | Current state |
+> |---|---|
+> | No backpressure handling | ✅ Bounded frame queues with drop-oldest; queue depth exported as `argus_camera_queue_depth` |
+> | Single-threaded processing bottleneck | ⚠️ Partially - per-camera worker threads exist; no multi-process worker pool |
+> | Direct face/OCR in FastAPI freezes the UI | ✅ Blocking work moved off the event loop via `run_in_executor` |
+> | No GPU memory management | ❌ Still outstanding (roadmap §3.2) |
+> | OpenCV `VideoCapture` for 100+ RTSP connections | ❌ Still the ingestion mechanism; fine at demo scale, unproven at 100 |
+
 ## Current State Audit - What Breaks at 100 Cameras
 
 **Files That MUST Be Deleted/Replaced:**
