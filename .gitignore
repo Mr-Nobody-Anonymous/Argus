@@ -13,7 +13,12 @@ build/
 # Data & Database
 *.db
 *.sqlite
-data/
+data/*
+# Keep the demo fixture: tests/test_regression.py and tests/swarm_benchmark.py
+# both require it, and it cannot be regenerated faithfully without a real
+# street photograph (YOLO returns nothing on drawn shapes).
+# NOTE: this must be `data/*`, not `data/` - git will not re-include a file
+# that sits inside an excluded directory.
 snapshots/
 backend/data/
 mosquitto/data/
@@ -38,3 +43,9 @@ yolov8*.pt
 frontend/dist/
 frontend/node_modules/
 data/argus_django.db
+
+# ── Demo fixture (must be last: a negation only wins if no LATER rule
+# re-excludes the path, and `*.mp4` above would otherwise catch it) ──
+# tests/test_regression.py and tests/swarm_benchmark.py both require this clip,
+# and it cannot be regenerated faithfully without a real street photograph.
+!data/demo_clip.mp4
