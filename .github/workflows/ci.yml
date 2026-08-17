@@ -204,10 +204,28 @@ jobs:
           print("weights ready:", dest.stat().st_size, "bytes")
           PY
 
+      - name: Initialise the database schema
+        # Without Django's auth tables, 21 of the 22 security tests skip and CI
+        # goes green having verified almost nothing.
+        run: |
+          python backend/scripts/init_db.py
+          python backend/scripts/run_admin.py --setup-only
+
       - name: Run test suites
         run: |
           pytest tests/test_regression.py tests/test_api_security.py \
                  -v --tb=short --durations=10
+
+      - name: Fail if too much was skipped
+        # A suite that skips itself into a green tick is worse than a red one.
+        run: |
+          pytest tests/test_api_security.py -q 2>&1 | tee /tmp/sec.txt
+          SKIPS=$(grep -oE '[0-9]+ skipped' /tmp/sec.txt | grep -oE '[0-9]+' || echo 0)
+          echo "security suite skipped: ${SKIPS}"
+          if [ "${SKIPS:-0}" -gt 2 ]; then
+            echo "::error::${SKIPS} security tests skipped - the auth tables are probably missing"
+            exit 1
+          fi
 
       - name: Verify the API actually boots
         # The suites use TestClient. This catches lifespan/startup failures that

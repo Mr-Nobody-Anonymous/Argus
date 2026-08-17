@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ARGUS_LOG_FORMAT`, and `ARGUS_LOG_LEVEL` through to the backend, and refuses
   to start without a signing key.
 - `requests` added to `requirements.txt`.
+- `run_admin.py --setup-only` — creates the Argus and Django auth tables and
+  exits, instead of only doing so as a side effect of starting a blocking
+  server. CI uses it, and then fails if more than two security tests skip: on
+  an unseeded database 21 of the 22 would skip and the run would go green
+  having verified nothing.
+- `backend/models/.gitkeep` — git omits empty directories, so `backend/models/`
+  did not exist in a fresh clone and the documented weights copy failed with
+  "Not a directory".
 
 ### Fixed
 - **The Docker healthcheck could never pass.** It ran

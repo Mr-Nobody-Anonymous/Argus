@@ -104,6 +104,9 @@ Argus authenticates against the **Django `auth_user` table** — there is no
 second user store to drift out of sync. Create the first superuser:
 
 ```bash
+# Create the Django auth tables and an admin/admin123 account, then exit:
+python backend/scripts/run_admin.py --setup-only
+
 python backend/scripts/run_admin.py 0.0.0.0:8001   # then visit /admin
 # or create one directly:
 python -c "

@@ -19,7 +19,8 @@ or snapshots. See [What a fresh clone does *not* include](README.md#5-what-a-fre
 in the README for how to obtain each.
 
 ```bash
-python backend/scripts/init_db.py    # create the Argus tables
+python backend/scripts/init_db.py                   # Argus tables
+python backend/scripts/run_admin.py --setup-only   # Django auth tables + admin/admin123
 uvicorn backend.api.main:app --reload
 
 cd frontend && npm install && npm run dev
@@ -39,6 +40,11 @@ the default run.
 
 If a test needs the database it should **skip** when the DB is absent rather
 than fail: CI and fresh clones have no `data/argus.db`.
+
+Run `run_admin.py --setup-only` before the security suite. Without Django's
+`auth_user` table, 21 of its 22 tests skip themselves and the run goes green
+having verified essentially nothing — so CI seeds the schema first and then
+**fails if more than two security tests skip**.
 
 ## What CI enforces
 
