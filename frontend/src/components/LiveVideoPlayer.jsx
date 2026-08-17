@@ -50,9 +50,15 @@ export default function LiveVideoPlayer({ cameraId, detections: propDetections, 
         let isMounted = true;
 
         const connectWebSocket = () => {
-            // Connect to the API-prefixed WebSocket endpoint
-            // The Vite dev server does not proxy WebSocket, so we connect directly
-            const ws = new WebSocket(`ws://localhost:8000/api/ws/stream/${cameraId}`);
+            // Connect to the API-prefixed WebSocket endpoint through the same
+            // origin the page was served from, so the dev-server proxy (and any
+            // reverse proxy in production) handles the upgrade. Hardcoding
+            // localhost breaks every non-local deployment and blocks wss://
+            // when the dashboard is served over HTTPS.
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(
+                `${wsProtocol}//${window.location.host}/api/ws/stream/${cameraId}`
+            );
 
             ws.onopen = () => {
                 if (isMounted) {

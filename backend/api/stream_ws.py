@@ -5,12 +5,15 @@ Provides smooth video feed with bounding box overlays to frontend
 import asyncio
 import json
 import base64
+import logging
 import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,16 +29,34 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
     - JSON metadata: {bbox: [...], tracks: [...], timestamp: ...}
     """
     await websocket.accept()
-    
+
+    attention_tracker = None
     try:
         from backend.services.core_engine.processing_coordinator import get_processing_coordinator
-        
+        from backend.services.management.user_attention_tracker import get_user_attention_tracker
+
+        # Boost processing priority for cameras a user is actively watching.
+        try:
+            attention_tracker = get_user_attention_tracker()
+            attention_tracker.register_active_stream(camera_id)
+        except Exception as exc:  # noqa: BLE001 - attention tracking is best-effort
+            logger.warning(f"Could not register active stream for camera {camera_id}: {exc}")
+            attention_tracker = None
+
+        loop = asyncio.get_running_loop()
+
         while True:
             try:
-                # Get current frame with detection results
+                # Get current frame with detection results.
+                # `get_latest_frame` performs a blocking queue read plus a lock
+                # acquisition, so run it in the default executor to avoid
+                # stalling the event loop (which throttles every other
+                # connection sharing this worker).
                 coordinator = get_processing_coordinator()
-                frame_data = coordinator.get_latest_frame(camera_id)
-                
+                frame_data = await loop.run_in_executor(
+                    None, coordinator.get_latest_frame, camera_id
+                )
+
                 if frame_data:
                     frame, detections = frame_data
                     
@@ -88,11 +109,32 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
             except WebSocketDisconnect:
                 break
             except Exception as e:
-                await websocket.send_json({"error": str(e), "camera_id": camera_id, "detections": []})
+                logger.warning(f"Stream error for camera {camera_id}: {e}")
+                try:
+                    await websocket.send_json(
+                        {"error": str(e), "camera_id": camera_id, "detections": []}
+                    )
+                except Exception:
+                    # Peer is gone - stop the loop instead of spinning forever.
+                    break
                 await asyncio.sleep(0.1)
-                
+
+    except WebSocketDisconnect:
+        pass
     except Exception as e:
-        await websocket.close()
+        logger.error(f"WebSocket stream failed for camera {camera_id}: {e}")
+    finally:
+        # Always release the attention slot, otherwise the camera keeps its
+        # priority boost forever after the viewer disconnects.
+        if attention_tracker is not None:
+            try:
+                attention_tracker.unregister_active_stream(camera_id)
+            except Exception:
+                pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.get("/stream/{camera_id}")

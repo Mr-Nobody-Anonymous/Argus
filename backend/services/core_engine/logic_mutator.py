@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any
 
-from ...config.config import get_config
+from backend.config.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,19 @@ def filter_detections(detections):
         ast.Import, ast.ImportFrom,
         ast.Attribute, ast.Lambda, ast.ClassDef,
         ast.With, ast.AsyncWith,
-        ast.Try, ast.TryExcept, ast.TryFinally,
+        # NOTE: ast.TryExcept / ast.TryFinally are Python 2 nodes removed in
+        # Python 3 - ast.Try covers both forms. ast.TryStar (3.11+) covers
+        # `except*` groups and is added conditionally below.
+        ast.Try,
         ast.Global, ast.Nonlocal, ast.Delete,
         ast.Yield, ast.YieldFrom,
         ast.Await, ast.AsyncFunctionDef,
         ast.GeneratorExp,
     }
+
+    # `except*` exception groups only exist on Python 3.11+
+    if hasattr(ast, "TryStar"):
+        FORBIDDEN_AST_NODES.add(ast.TryStar)
 
     def __init__(self):
         self.config = get_config()

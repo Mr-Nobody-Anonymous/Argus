@@ -318,6 +318,21 @@ class Config(BaseModel):
     rules: Dict[str, RuleConfig] = {}
 
 
+#: Absolute path to the repository root (the directory containing `backend/`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_path(path: Any) -> Path:
+    """Resolve a config path against the project root.
+
+    Relative paths in config.yaml (e.g. ``data/snapshots``) are anchored to the
+    repository root so they resolve identically regardless of the working
+    directory the process was started from. Absolute paths pass through.
+    """
+    p = Path(path)
+    return p if p.is_absolute() else (PROJECT_ROOT / p)
+
+
 def section_to_dict(section: Any) -> Dict[str, Any]:
     """Normalize a config section to a plain dictionary."""
     if section is None:
@@ -334,11 +349,14 @@ def section_to_dict(section: Any) -> Dict[str, Any]:
 def load_config(config_path: str = None) -> Config:
     """Load configuration from YAML file"""
     if config_path is None:
-        # Try multiple possible locations
+        # Resolve the packaged config first (works regardless of the current
+        # working directory), then fall back to CWD-relative locations.
+        project_root = Path(__file__).resolve().parent.parent.parent
         possible_paths = [
-            Path("config/config.yaml"),  # From project root
-            Path("../config/config.yaml"),  # From backend dir
-            Path(__file__).parent.parent / "config" / "config.yaml",  # Absolute from this file
+            project_root / "config" / "config.yaml",   # Repo root (authoritative)
+            Path(__file__).resolve().parent.parent / "config" / "config.yaml",  # backend/config/
+            Path("config/config.yaml"),                # From project root (CWD)
+            Path("../config/config.yaml"),             # From backend dir (CWD)
         ]
         config_file = None
         for p in possible_paths:
