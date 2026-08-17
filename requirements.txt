@@ -50,6 +50,9 @@ django>=5.0,<6.0
 # ── ONNX runtime (model optimisation / InsightFace backend) ──
 onnxruntime>=1.16
 
+# ── HTTP client (used by the Docker healthcheck and diagnostic scripts) ──
+requests>=2.31
+
 # ── Testing & tooling ──
 pytest>=7.4
 pytest-asyncio>=0.23

@@ -13,11 +13,22 @@ services:
       - ./config:/app/config
     environment:
       - PYTHONUNBUFFERED=1
+      # Required: a signing key of >=32 chars. Without it the app generates an
+      # ephemeral key, so every container restart invalidates all issued tokens.
+      # Set it in a .env file next to this compose file (see .env.example).
+      - ARGUS_JWT_SECRET=${ARGUS_JWT_SECRET:?set ARGUS_JWT_SECRET in .env - see .env.example}
+      - ARGUS_CORS_ORIGINS=${ARGUS_CORS_ORIGINS:-http://localhost:3000}
+      - ARGUS_LOG_FORMAT=${ARGUS_LOG_FORMAT:-json}
+      - ARGUS_LOG_LEVEL=${ARGUS_LOG_LEVEL:-INFO}
     depends_on:
       - mqtt
       - qdrant
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/v1/health')"]
+      # Uses urllib from the stdlib rather than `requests`, and checks the exit
+      # status. The previous probe imported requests (not a declared dependency)
+      # and ignored the response code, so the container was reported unhealthy
+      # even when the API was serving correctly.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5).status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

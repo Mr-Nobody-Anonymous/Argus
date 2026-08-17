@@ -136,6 +136,8 @@ operator out mid-shift.
 | Service          | URL                          |
 |------------------|------------------------------|
 | Dashboard        | http://localhost:3000        |
+| ├ Cameras / Events / Analytics | `/` · `/events` · `/analytics` |
+| └ Adaptive Learning | http://localhost:3000/learning |
 | API Docs         | http://localhost:8000/docs   |
 | Prometheus metrics | http://localhost:8000/metrics |
 | WebSocket Stream | `ws://localhost:8000/api/ws/stream/{camera_id}?token=<jwt>` |
@@ -561,10 +563,17 @@ log line, with any `extra={...}` fields merged in — so logs can be filtered by
 ### The suites that gate correctness
 
 ```bash
-pytest tests/test_regression.py tests/test_api_security.py -v
+pytest        # collects exactly these two suites (see pytest.ini)
 ```
 
-**44 tests, all passing.**
+**44 tests, all passing** in ~14 s.
+
+Every push and pull request runs these on Python 3.11 and 3.13 via
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
+boots the real server to assert `/health` responds, an unauthenticated request
+is refused with `401`, and `/metrics` emits `argus_` lines — plus a secret
+scan, a gitignore-hygiene check, and a frontend build. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 | Suite | Tests | Guards against |
 |---|---|---|
@@ -631,7 +640,10 @@ python tests/buffer_monitor.py                       # runs until interrupted
 ```
 argus/
 ├── README.md, FOLDER_STRUCTURE.md, PRODUCTION_ROADMAP.md, TODO.md,
-│   INTEGRATION_TODO.md, LICENSE
+│   INTEGRATION_TODO.md, CONTRIBUTING.md, CHANGELOG.md, LICENSE
+├── .github/workflows/ci.yml              # Lint, secret scan, tests (3.11/3.13), frontend build
+├── pytest.ini                            # Test collection + markers
+├── .dockerignore                         # Keeps .git/node_modules/data out of build context
 ├── requirements.txt                      # Core deps (incl. PyJWT)
 ├── requirements-optional.txt             # Heavy/optional extras (django, kafka, qdrant…)
 ├── .env.example                          # Every ARGUS_* variable, documented
@@ -665,8 +677,8 @@ argus/
 ├── frontend/
 │   ├── src/App.jsx                       # Shell + auth gate (login vs dashboard)
 │   ├── src/pages/Login.jsx               # Login screen
-│   ├── src/pages/                        # SurveillanceDashboard, CameraManagement,
-│   │                                     #   EventFeed, AnalyticsDashboard, AdaptiveLearning
+│   ├── src/pages/                        # SurveillanceDashboard, CameraManagement, EventFeed,
+│   │                                     #   AnalyticsDashboard, AdaptiveLearningDashboard
 │   ├── src/components/LiveVideoPlayer.jsx  # Canvas bbox/zone overlays over the WS stream
 │   └── src/services/api.js               # Axios client, token store, transparent refresh
 │

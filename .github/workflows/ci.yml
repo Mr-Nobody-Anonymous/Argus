@@ -1,0 +1,260 @@
+name: CI
+
+# The repository had 44 passing tests and nothing that ran them. A test suite
+# nobody executes is documentation, not a safety net.
+#
+# Deliberately split into fast and slow jobs: `lint` and `security` finish in
+# under a minute and catch the majority of mistakes, so a broken PR fails fast
+# rather than after a ten-minute torch install.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same branch.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tests must never sign with an ephemeral key - they assert on token validity
+  # across calls. This value is for CI only and is not a real secret.
+  ARGUS_JWT_SECRET: ci-only-test-secret-key-at-least-32-chars-long
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint & static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Byte-compile every module
+        # Catches syntax errors in files no test imports - several modules in
+        # this repo are only reachable at runtime.
+        run: |
+          python -m compileall -q backend tests
+
+      - name: Check requirements files do not conflict
+        # django was once declared in BOTH requirements files with different
+        # ranges, which silently downgraded whichever installed last.
+        run: |
+          python - <<'PY'
+          import re, sys
+          def names(path):
+              out = {}
+              for line in open(path):
+                  line = line.split("#")[0].strip()
+                  if not line:
+                      continue
+                  name = re.split(r"[<>=!\[]", line)[0].strip().lower()
+                  if name:
+                      out[name] = line
+              return out
+          core = names("requirements.txt")
+          opt = names("requirements-optional.txt")
+          dupes = sorted(set(core) & set(opt))
+          if dupes:
+              for d in dupes:
+                  print(f"::error::'{d}' declared in both requirements files: "
+                        f"{core[d]!r} vs {opt[d]!r}")
+              sys.exit(1)
+          print(f"OK - {len(core)} core / {len(opt)} optional, no overlap")
+          PY
+
+      - name: Validate YAML config and compose files
+        run: |
+          pip install pyyaml
+          python - <<'PY'
+          import yaml, sys
+          for f in ("config/config.yaml", "docker-compose.yml",
+                    "docker-compose.mediamtx.yml"):
+              try:
+                  with open(f) as fh:
+                      yaml.safe_load(fh)
+                  print(f"OK   {f}")
+              except FileNotFoundError:
+                  print(f"skip {f} (absent)")
+              except Exception as exc:
+                  print(f"::error file={f}::{exc}")
+                  sys.exit(1)
+          PY
+
+  security:
+    name: Secret & config hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: No plaintext secrets committed
+        # config.yaml supports ${VAR} interpolation precisely so credentials
+        # stay out of the repo. This asserts nobody has undone that.
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+          HINTS = ("password", "passwd", "secret", "api_key", "apikey",
+                   "token", "private_key", "access_key")
+          # A value is suspicious unless it is empty, a ${VAR} placeholder,
+          # an obvious placeholder word, or a comment.
+          # Safe: empty, a ${VAR} placeholder (incl. ${VAR:-default} and
+          # ${VAR:?error}), a number, a boolean, or an obvious placeholder word.
+          SAFE = re.compile(r"^\s*(\$\{[^}]*\}|''|\"\"|null|~|true|false|"
+                            r"[\d.]+|<[^>]+>|your[-_ ].*|change[-_ ]?me|"
+                            r"xxx+|\.\.\.)?\s*$", re.I)
+          bad = []
+          for path in ["config/config.yaml", "docker-compose.yml", ".env.example"]:
+              p = pathlib.Path(path)
+              if not p.exists():
+                  continue
+              for n, line in enumerate(p.read_text().splitlines(), 1):
+                  stripped = line.split("#")[0]
+                  # Split on whichever separator appears FIRST. Splitting on ':'
+                  # unconditionally mangles 'KEY=${VAR:?msg}' into a bogus value.
+                  cands = [i for i in (stripped.find(":"), stripped.find("=")) if i != -1]
+                  if not cands:
+                      continue
+                  sep = stripped[min(cands)]
+                  key, _, value = stripped.partition(sep)
+                  if any(h in key.lower() for h in HINTS) and not SAFE.match(value):
+                      bad.append(f"{path}:{n}: {line.strip()}")
+          if bad:
+              for b in bad:
+                  print(f"::error::possible plaintext secret -> {b}")
+              sys.exit(1)
+          print("OK - no plaintext secrets found")
+          PY
+
+      - name: .gitignore still excludes runtime data
+        # data/ holds the database, snapshots and enrolled faces. A change that
+        # starts tracking them leaks biometric data into git history.
+        run: |
+          set -e
+          for path in data/argus.db data/snapshots/x.jpg backend/models/yolov8n.pt; do
+            if git check-ignore -q "$path"; then
+              echo "OK   $path ignored"
+            else
+              echo "::error::$path is NOT gitignored - runtime data would be committed"
+              exit 1
+            fi
+          done
+          # ...but the test fixture must stay tracked, or the suite cannot run.
+          if git ls-files --error-unmatch data/demo_clip.mp4 > /dev/null 2>&1; then
+            echo "OK   data/demo_clip.mp4 is tracked (tests depend on it)"
+          else
+            echo "::error::data/demo_clip.mp4 is not tracked - tests will fail on a fresh clone"
+            exit 1
+          fi
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the Docker image's version; 3.13 is what the sandbox runs.
+        # The original pinned requirements were uninstallable on 3.13, so both
+        # ends of the supported range are exercised.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - name: Install dependencies
+        # CPU-only torch: the GPU wheels are ~2 GB and CI has no GPU.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Fetch detection weights
+        # backend/models/*.pt is gitignored (6 MB binary), so CI downloads it.
+        run: |
+          mkdir -p backend/models
+          python - <<'PY'
+          import shutil, pathlib, sys
+          from ultralytics import YOLO
+          dest = pathlib.Path("backend/models/yolov8n.pt")
+          YOLO("yolov8n.pt")            # downloads if not already cached
+          if not dest.exists():
+              src = next((c for c in pathlib.Path(".").rglob("yolov8n.pt")
+                          if c.resolve() != dest.resolve()), None)
+              if src is None:
+                  print("::error::yolov8n.pt was not found after download")
+                  sys.exit(1)
+              shutil.copy(src, dest)
+          print("weights ready:", dest.stat().st_size, "bytes")
+          PY
+
+      - name: Run test suites
+        run: |
+          pytest tests/test_regression.py tests/test_api_security.py \
+                 -v --tb=short --durations=10
+
+      - name: Verify the API actually boots
+        # The suites use TestClient. This catches lifespan/startup failures that
+        # only appear when uvicorn runs the app for real.
+        run: |
+          python -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000 &
+          SERVER=$!
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8000/api/v1/health > /dev/null; then
+              echo "API is up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/api/v1/health | head -c 400; echo
+          echo "--- unauthenticated request must be refused ---"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/cameras)
+          echo "GET /api/v1/cameras -> $CODE"
+          test "$CODE" = "401" || { echo "::error::expected 401, got $CODE"; kill $SERVER; exit 1; }
+          echo "--- Prometheus metrics must be exposed ---"
+          curl -sf http://127.0.0.1:8000/metrics | grep -q '^argus_' \
+            || { echo "::error::/metrics returned no argus_ metrics"; kill $SERVER; exit 1; }
+          kill $SERVER
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build
+        working-directory: frontend
+        # Catches a missing import - App.jsx once imported a Login.jsx that had
+        # never been committed, so a fresh clone could not build at all.
+        run: |
+          npm ci || npm install
+          npm run build
+
+      - name: Confirm build output exists
+        run: |
+          test -f frontend/dist/index.html \
+            || { echo "::error::vite produced no index.html"; exit 1; }
+          echo "Build output:"
+          ls -la frontend/dist

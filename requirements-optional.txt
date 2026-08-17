@@ -43,4 +43,7 @@ pytorchvideo>=0.1.5
 kafka-python>=2.0
 elasticsearch>=8.0
 qdrant-client>=1.7
-django>=4.2,<6.0
+# NOTE: django is a CORE dependency (see requirements.txt) - the admin UI is the
+# only way to manage the auth_user table that authentication depends on. It is
+# deliberately NOT repeated here: declaring it in both files with different
+# ranges silently downgrades whichever installs last.

@@ -1,0 +1,45 @@
+# Build-context exclusions. Without this the daemon uploads .git, node_modules,
+# the database and model weights on every build - slow, and it bakes runtime
+# data (including enrolled face images) into image layers.
+
+.git
+.github
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node - the frontend image runs its own npm install
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data: mounted as a volume at /app/data, never baked in
+data/
+!data/demo_clip.mp4
+
+# Model weights are downloaded on first run
+*.pt
+*.onnx
+*.engine
+
+# Local environment and editor state
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs and tests are not needed at runtime
+docs/
+*.md
+!README.md
