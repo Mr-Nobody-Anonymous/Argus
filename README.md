@@ -279,7 +279,7 @@ curl http://localhost:8000/api/v1/cameras -H "Authorization: Bearer $TOKEN"
 | **LPR Agent** | License plate OCR when vehicles detected | Evolves `segmentation_threshold`, `min_plate_height_px`, `resolution_downscale`, `detection_confidence`, `ocr_beam_width`. |
 | **Consortium Broker** | Resource auctioneer | Collects agent bids → resolves allocations → posts context to shared blackboard. |
 | **Logic Mutator** | Sandboxed rule gen | Synthesises, tests, and mutates Python detection-filter rules (sandboxed `eval`). |
-| **Evolutionary Engine** | Cross-agent optimiser | Runs a DEAP-based genetic algorithm over the entire pipeline parameter space. |
+| **Evolutionary Engine** | Cross-agent optimiser | Runs a self-contained genetic algorithm (elitism, crossover, Gaussian mutation) over the pipeline parameter space. No external GA library is used. |
 
 #### Does the swarm actually help? (measured, not asserted)
 

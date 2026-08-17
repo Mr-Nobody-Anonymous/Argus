@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- CI check that fails when a package is declared in `requirements.txt` but
+  imported nowhere (with an explicit allowlist for framework plugins and
+  runtime backends that are legitimately never imported by our source).
 - Six regression tests covering zone-alert payload shapes and per-track memory
   bounds (mutation-verified: each fails when its bug is reintroduced).
 - **Continuous integration** (`.github/workflows/ci.yml`). Nothing ran the test
@@ -38,7 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   did not exist in a fresh clone and the documented weights copy failed with
   "Not a directory".
 
+### Removed
+- Nine declared-but-unimported dependencies: `scikit-image` (35 MB on disk),
+  `statsmodels`, `torchmetrics`, `deap`, `pydantic-settings`, `httpx`,
+  `python-dateutil`, `black`, `pylint`. 32 declared packages down to 23.
+  Verified by blocking each module at import time: the app and all 49 tests
+  still pass, and a live server serves authenticated traffic including the
+  multipart upload path.
+
 ### Fixed
+- **README and FOLDER_STRUCTURE claimed a "DEAP-based genetic algorithm".**
+  `evolutionary_engine.py` never imported DEAP - it implements its own GA with
+  elitism, crossover and Gaussian mutation on top of `random`.
 - **Zone checking crashed on API-shaped detections.** `_get_center_from_dict_or_obj`
   indexed `bbox` as a list, but every serialised detection (WebSocket, REST) uses
   `{"x1":..,"y1":..,"x2":..,"y2":..}`, so feeding one back raised `KeyError: 0`
