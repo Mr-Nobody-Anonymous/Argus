@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   did not exist in a fresh clone and the documented weights copy failed with
   "Not a directory".
 
+### Added
+- **A hard disk ceiling for snapshots** (`retention.snapshots_max_mb`, default
+  2048). Time-based expiry cannot bound disk usage inside its own window: at the
+  measured event rate one camera writes ~4 GB of snapshots per day, so a 30-day
+  policy only reclaims space after ~130 GB (~2.7 TB across 20 cameras). Every
+  retention pass now evicts oldest-first until the directory fits.
+
 ### Removed
 - Nine declared-but-unimported dependencies: `scikit-image` (35 MB on disk),
   `statsmodels`, `torchmetrics`, `deap`, `pydantic-settings`, `httpx`,

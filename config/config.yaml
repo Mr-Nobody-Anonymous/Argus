@@ -17,6 +17,10 @@ retention:
   anomalies_days: 30
   plates_days: 30
   audit_days: 365
+  # Hard disk ceiling for the snapshot directory, enforced on every retention
+  # pass by evicting the oldest files first. Time-based expiry alone cannot
+  # bound disk usage inside the window. Set 0 to disable.
+  snapshots_max_mb: 2048
 
 # Cross-Camera Tracking Configuration
 cross_camera_tracker:

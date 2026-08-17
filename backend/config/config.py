@@ -299,6 +299,9 @@ class RetentionConfig(BaseModel):
     anomalies_days: int = 30
     plates_days: int = 30
     audit_days: int = 365
+    # Hard disk ceiling for snapshots, enforced independently of the time
+    # window (a busy camera reaches ~130 GB before 30 days elapse). 0 disables.
+    snapshots_max_mb: int = 2048
 
 
 class Config(BaseModel):

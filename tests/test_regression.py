@@ -612,3 +612,80 @@ class TestZoneAlertsPayloadShapes:
         za._touch_track(10 ** 6)["v"] = "new"   # forces one eviction
         assert 0 in za.zone_triggers, "LRU refresh failed; an active track was dropped"
         assert 1 not in za.zone_triggers, "evicted the wrong entry"
+
+
+class TestSnapshotDiskCeiling:
+    """Time-based retention cannot bound disk usage inside its own window.
+
+    At the measured event rate one camera writes roughly 4 GB of snapshots a
+    day, so a 30-day policy only frees space after ~130 GB. The size cap is a
+    second, independent bound that evicts oldest-first.
+    """
+
+    @staticmethod
+    def _seed(tmp_dir, count=10, mb=1):
+        import os
+        paths = []
+        for i in range(count):
+            f = tmp_dir / f"cap_{i:02d}.jpg"
+            f.write_bytes(b"x" * (mb * 1024 * 1024))
+            age = time.time() - (count - i) * 86400   # oldest first
+            os.utime(f, (age, age))
+            paths.append(f)
+        return paths
+
+    @staticmethod
+    def _dir():
+        from backend.config.config import resolve_path, get_config
+        d = resolve_path(get_config().system.snapshot_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        for stale in d.glob("cap_*.jpg"):
+            stale.unlink()
+        return d
+
+    def _cleanup(self, d):
+        for f in d.glob("cap_*.jpg"):
+            f.unlink()
+
+    def test_cap_evicts_oldest_until_under_budget(self):
+        from backend.services.management.retention import enforce_snapshot_size_cap
+        d = self._dir()
+        try:
+            self._seed(d, count=10, mb=1)
+            removed = enforce_snapshot_size_cap(5)
+            remaining = sorted(p.name for p in d.glob("cap_*.jpg"))
+            total_mb = sum(p.stat().st_size for p in d.glob("cap_*.jpg")) / 1048576
+            assert removed == 5, f"expected 5 evictions, got {removed}"
+            assert total_mb <= 5, f"still {total_mb:.1f} MB over a 5 MB cap"
+            assert remaining == [f"cap_{i:02d}.jpg" for i in range(5, 10)], (
+                f"evicted the wrong files (must be oldest-first): {remaining}"
+            )
+        finally:
+            self._cleanup(d)
+
+    def test_cap_is_a_noop_when_under_budget(self):
+        from backend.services.management.retention import enforce_snapshot_size_cap
+        d = self._dir()
+        try:
+            self._seed(d, count=3, mb=1)
+            assert enforce_snapshot_size_cap(100) == 0
+            assert len(list(d.glob("cap_*.jpg"))) == 3, "deleted files while under cap"
+        finally:
+            self._cleanup(d)
+
+    def test_cap_can_be_disabled(self):
+        from backend.services.management.retention import enforce_snapshot_size_cap
+        d = self._dir()
+        try:
+            self._seed(d, count=3, mb=1)
+            assert enforce_snapshot_size_cap(0) == 0, "cap ran while disabled"
+            assert len(list(d.glob("cap_*.jpg"))) == 3
+        finally:
+            self._cleanup(d)
+
+    def test_retention_pass_reports_the_cap(self):
+        from backend.services.management.retention import run_retention_once
+        results = run_retention_once()
+        assert "snapshots_over_cap" in results, (
+            "run_retention_once() does not enforce the size cap"
+        )

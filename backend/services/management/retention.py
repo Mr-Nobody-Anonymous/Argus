@@ -47,6 +47,11 @@ _DEFAULTS: Dict[str, Any] = {
     "anomalies_days": 30,
     "plates_days": 30,
     "audit_days": 365,
+    # Time-based retention alone cannot bound disk usage: at the measured event
+    # rate a single camera writes ~4 GB of snapshots per day, so the 30-day
+    # window is reached only after ~130 GB. This is a hard ceiling enforced on
+    # every pass, oldest evicted first. 0 disables it.
+    "snapshots_max_mb": 2048,
 }
 
 
@@ -102,6 +107,55 @@ def purge_snapshots(days: int) -> int:
         return 0
 
 
+def enforce_snapshot_size_cap(max_mb: int) -> int:
+    """Evict oldest snapshots until the directory fits under `max_mb`.
+
+    Time-based expiry cannot prevent a disk filling up inside the retention
+    window, so this runs as a second, independent bound.
+    """
+    if max_mb <= 0:
+        return 0
+    try:
+        snapshot_dir = resolve_path(get_config().system.snapshot_dir)
+        if not snapshot_dir.exists():
+            return 0
+
+        budget = max_mb * 1024 * 1024
+        files = []
+        total = 0
+        for path in snapshot_dir.glob("*.jpg"):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            files.append((st.st_mtime, st.st_size, path))
+            total += st.st_size
+
+        if total <= budget:
+            return 0
+
+        files.sort()  # oldest first
+        removed = 0
+        for _mtime, size, path in files:
+            if total <= budget:
+                break
+            try:
+                path.unlink()
+                total -= size
+                removed += 1
+            except OSError as exc:
+                logger.warning(f"Could not evict snapshot {path.name}: {exc}")
+        if removed:
+            logger.warning(
+                f"Snapshot directory exceeded {max_mb} MB - evicted {removed} "
+                f"oldest file(s) to stay under the cap"
+            )
+        return removed
+    except Exception as exc:  # noqa: BLE001 - retention must never crash the app
+        logger.error(f"Snapshot size cap failed: {exc}")
+        return 0
+
+
 def run_retention_once() -> Dict[str, int]:
     """Execute one full retention pass. Returns per-class deletion counts."""
     policy = _policy()
@@ -118,6 +172,9 @@ def run_retention_once() -> Dict[str, int]:
         logger.error(f"Retention database pass failed: {exc}")
 
     results["snapshots"] = purge_snapshots(policy["snapshots_days"])
+    results["snapshots_over_cap"] = enforce_snapshot_size_cap(
+        policy.get("snapshots_max_mb", 0)
+    )
 
     total = sum(results.values())
     if total:
