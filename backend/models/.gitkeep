@@ -1,0 +1,7 @@
+# Keeps this directory in a fresh clone.
+#
+# The weights themselves (*.pt) are gitignored - they are a 6 MB binary that
+# ultralytics can fetch on demand. Without this placeholder git would omit the
+# directory entirely, and the documented
+#     cp <somewhere>/yolov8n.pt backend/models/
+# fails with "Not a directory".
