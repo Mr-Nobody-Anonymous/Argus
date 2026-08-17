@@ -13,7 +13,7 @@ from collections import defaultdict
 from backend.services.management.zone_manager import get_zone_manager
 from backend.services.management.event_store import get_event_store
 from backend.services.core_engine.inference_engine import get_inference_engine
-from backend.config.config import get_config
+from backend.config.config import get_config, resolve_path, section_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,12 @@ class RulesEngine:
         self.dedup_window = timedelta(seconds=5)
         
         # Snapshot directory
-        self.snapshot_dir = Path(self.config.system.snapshot_dir)
+        self.snapshot_dir = resolve_path(self.config.system.snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         
-        self.lock = threading.Lock()
+        # RLock: _check_loitering_rule() calls _is_duplicate_event() while
+        # already holding the lock, which would deadlock a plain Lock.
+        self.lock = threading.RLock()
 
     def process_detections(self, camera_id: int, frame, detections: List[Dict]):
         """Process detections and generate events based on rules"""
@@ -71,13 +73,20 @@ class RulesEngine:
 
     def _check_intrusion_rule(self, camera_id: int, zone: Dict, detection: Dict, frame):
         """Check intrusion rule: object enters restricted zone"""
-        rule_config = self.config.rules.get('intrusion', {})
+        rule_config = section_to_dict(self.config.rules.get('intrusion'))
         if not rule_config.get('enabled', True):
             return
 
-        # Create event hash for deduplication
-        event_hash = f"{camera_id}_{zone['id']}_intrusion_{detection['class_name']}"
-        
+        # Intrusion is an *entry* event: it should fire once when a subject
+        # crosses into the zone, not every dedup window for as long as they
+        # stand there. Keying the hash on the track ID gives one event per
+        # person per entry; the class-name key it replaced collapsed every
+        # person in the zone into a single "person" bucket that then re-fired
+        # every 5 seconds forever (observed: 174 intrusion events in 24h).
+        track_id = detection.get('track_id')
+        subject = f"track_{track_id}" if track_id is not None else detection['class_name']
+        event_hash = f"{camera_id}_{zone['id']}_intrusion_{subject}"
+
         if self._is_duplicate_event(event_hash):
             return
 
@@ -113,7 +122,7 @@ class RulesEngine:
 
     def _check_loitering_rule(self, camera_id: int, zone: Dict, detection: Dict, frame):
         """Check loitering rule: object remains in zone > threshold seconds"""
-        rule_config = self.config.rules.get('loitering', {})
+        rule_config = section_to_dict(self.config.rules.get('loitering'))
         if not rule_config.get('enabled', True):
             return
 
@@ -123,9 +132,21 @@ class RulesEngine:
         if detection['class_name'] != 'person':
             return
 
-        # Create object key (simple tracking by bbox center)
-        center = self.inference_engine.get_bbox_center(detection['bbox'])
-        object_key = f"{center[0]//50}_{center[1]//50}"  # Grid-based tracking
+        # Identify the loitering subject.
+        #
+        # Prefer the tracker's persistent ID: it follows a person as they move,
+        # which is exactly what dwell-time measurement requires. The previous
+        # grid-cell key (center // 50) was a stand-in from before tracking
+        # worked - it treated every 50px cell as a separate "object", so a busy
+        # scene produced one loitering event per occupied cell per dedup window
+        # (observed: 377 loitering events in 24h from a single camera), while a
+        # person who simply walked across cells never accumulated dwell time.
+        track_id = detection.get('track_id')
+        if track_id is not None:
+            object_key = f"track_{track_id}"
+        else:
+            center = self.inference_engine.get_bbox_center(detection['bbox'])
+            object_key = f"grid_{center[0]//50}_{center[1]//50}"
         
         zone_id = zone['id']
         current_time = datetime.now()
@@ -210,12 +231,24 @@ class RulesEngine:
             return ""
 
     def _is_duplicate_event(self, event_hash: str) -> bool:
-        """Check if event is a duplicate within dedup window"""
+        """
+        Suppress repeats of an event that is still ongoing.
+
+        The window slides: every suppressed sighting pushes the expiry forward,
+        so a subject who stays in a zone produces exactly one event no matter
+        how long they linger. The event only re-arms after the subject has been
+        absent for a full dedup window.
+
+        A fixed (non-sliding) window re-fired the same alert every 5 seconds for
+        as long as the condition held, which is what buried the operator's event
+        feed under hundreds of duplicates per camera per day.
+        """
         with self.lock:
-            if event_hash in self.recent_events:
-                last_time = self.recent_events[event_hash]
-                if datetime.now() - last_time < self.dedup_window:
-                    return True
+            last_time = self.recent_events.get(event_hash)
+            if last_time is not None and datetime.now() - last_time < self.dedup_window:
+                # Still ongoing - extend the suppression rather than expiring it.
+                self.recent_events[event_hash] = datetime.now()
+                return True
             return False
 
     def _cleanup_zone_occupancy(self):

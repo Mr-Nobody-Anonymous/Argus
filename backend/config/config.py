@@ -1,6 +1,8 @@
 """
 Configuration management for Argus
 """
+import os
+import re
 import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -288,8 +290,20 @@ class LprAgentConfig(BaseModel):
     compute_cost_per_frame: float = 12.0
 
 
+class RetentionConfig(BaseModel):
+    """Per-class data retention. See backend/services/management/retention.py."""
+    enabled: bool = True
+    interval_hours: int = 6
+    events_days: int = 90
+    snapshots_days: int = 30
+    anomalies_days: int = 30
+    plates_days: int = 30
+    audit_days: int = 365
+
+
 class Config(BaseModel):
     system: SystemConfig = SystemConfig()
+    retention: RetentionConfig = RetentionConfig()
     inference: InferenceConfig = InferenceConfig()
     enhancement: EnhancementConfig = EnhancementConfig()
     face_recognition: FaceRecognitionConfig = FaceRecognitionConfig()
@@ -318,6 +332,21 @@ class Config(BaseModel):
     rules: Dict[str, RuleConfig] = {}
 
 
+#: Absolute path to the repository root (the directory containing `backend/`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_path(path: Any) -> Path:
+    """Resolve a config path against the project root.
+
+    Relative paths in config.yaml (e.g. ``data/snapshots``) are anchored to the
+    repository root so they resolve identically regardless of the working
+    directory the process was started from. Absolute paths pass through.
+    """
+    p = Path(path)
+    return p if p.is_absolute() else (PROJECT_ROOT / p)
+
+
 def section_to_dict(section: Any) -> Dict[str, Any]:
     """Normalize a config section to a plain dictionary."""
     if section is None:
@@ -331,14 +360,88 @@ def section_to_dict(section: Any) -> Dict[str, Any]:
     return {}
 
 
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _interpolate_env(value: Any) -> Any:
+    """
+    Recursively expand ``${VAR}`` and ``${VAR:-default}`` in config values.
+
+    Secrets (RTSP/MQTT/database passwords, API keys) must never be committed to
+    config.yaml. They are referenced by name and supplied through the
+    environment, Docker secrets, or Kubernetes secrets at runtime.
+
+    An unset variable with no default is left as the literal ``${VAR}`` so that
+    validate_config() can report it instead of silently substituting "".
+    """
+    if isinstance(value, dict):
+        return {k: _interpolate_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_env(v) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    def _sub(match: "re.Match") -> str:
+        var_name, default = match.group(1), match.group(2)
+        env_value = os.environ.get(var_name)
+        if env_value is not None:
+            return env_value
+        if default is not None:
+            return default
+        return match.group(0)
+
+    return _ENV_PATTERN.sub(_sub, value)
+
+
+def find_unresolved_secrets(config_data: Any, _path: str = "") -> List[str]:
+    """Return dotted paths of config values with unresolved ``${VAR}`` refs."""
+    unresolved: List[str] = []
+    if isinstance(config_data, dict):
+        for key, val in config_data.items():
+            unresolved.extend(find_unresolved_secrets(val, f"{_path}.{key}" if _path else str(key)))
+    elif isinstance(config_data, list):
+        for idx, val in enumerate(config_data):
+            unresolved.extend(find_unresolved_secrets(val, f"{_path}[{idx}]"))
+    elif isinstance(config_data, str) and _ENV_PATTERN.search(config_data):
+        for match in _ENV_PATTERN.finditer(config_data):
+            if match.group(2) is None:
+                unresolved.append(f"{_path} (requires ${{{match.group(1)}}})")
+    return unresolved
+
+
+# Values that must never be echoed into logs, tracebacks, or API responses.
+_SECRET_KEY_HINTS = (
+    "password", "passwd", "secret", "token", "api_key", "apikey",
+    "credential", "private_key", "access_key",
+)
+
+
+def redact_secrets(data: Any) -> Any:
+    """Deep-copy a config/dict structure with secret-looking values masked."""
+    if isinstance(data, dict):
+        out = {}
+        for key, val in data.items():
+            if any(hint in str(key).lower() for hint in _SECRET_KEY_HINTS):
+                out[key] = "***REDACTED***" if val not in (None, "") else val
+            else:
+                out[key] = redact_secrets(val)
+        return out
+    if isinstance(data, list):
+        return [redact_secrets(v) for v in data]
+    return data
+
+
 def load_config(config_path: str = None) -> Config:
     """Load configuration from YAML file"""
     if config_path is None:
-        # Try multiple possible locations
+        # Resolve the packaged config first (works regardless of the current
+        # working directory), then fall back to CWD-relative locations.
+        project_root = Path(__file__).resolve().parent.parent.parent
         possible_paths = [
-            Path("config/config.yaml"),  # From project root
-            Path("../config/config.yaml"),  # From backend dir
-            Path(__file__).parent.parent / "config" / "config.yaml",  # Absolute from this file
+            project_root / "config" / "config.yaml",   # Repo root (authoritative)
+            Path(__file__).resolve().parent.parent / "config" / "config.yaml",  # backend/config/
+            Path("config/config.yaml"),                # From project root (CWD)
+            Path("../config/config.yaml"),             # From backend dir (CWD)
         ]
         config_file = None
         for p in possible_paths:
@@ -355,7 +458,10 @@ def load_config(config_path: str = None) -> Config:
     try:
         with open(config_file, 'r') as f:
             config_data = yaml.safe_load(f)
-        
+
+        # Expand ${VAR} / ${VAR:-default} so secrets stay out of the YAML.
+        config_data = _interpolate_env(config_data)
+
         config = Config(**config_data)
         logger.info(f"Configuration loaded from {config_file}")
         return config

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.database.db import get_db, close_db
 

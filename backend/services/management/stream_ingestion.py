@@ -2,6 +2,7 @@
 RTSP stream ingestion service with auto-reconnect and frame queue management
 """
 import cv2
+import os
 import threading
 import queue
 import time
@@ -65,6 +66,18 @@ class StreamIngestion:
         retry_count = 0
         max_retries = 10
         cap = None
+        # Local video files are a valid source (used for demos/tests). They differ
+        # from live streams in two ways that must be handled explicitly:
+        #   1. They hit EOF, which is normal termination, not a stream failure.
+        #   2. They decode as fast as the CPU allows, so playback must be paced
+        #      to the file's own FPS instead of spinning at ~500 fps.
+        is_file_source = (
+            not rtsp_url.startswith("webcam://")
+            and "://" not in rtsp_url
+            and os.path.exists(rtsp_url.split("?")[0])
+        )
+        source_frame_interval = 0.0
+        last_status_update = 0.0
 
         while not self.stop_flags[camera_id].is_set():
             try:
@@ -84,10 +97,22 @@ class StreamIngestion:
                 else:
                     if cap is None or not cap.isOpened():
                         logger.info(f"Camera {camera_id}: Connecting to {rtsp_url}")
-                        cap = cv2.VideoCapture(rtsp_url)
-                        
+                        # Strip any query string for local files (e.g. clip.mp4?x=2)
+                        cap = cv2.VideoCapture(
+                            rtsp_url.split("?")[0] if is_file_source else rtsp_url
+                        )
+
                         if not cap.isOpened():
                             raise Exception("Failed to open stream")
+
+                        if is_file_source:
+                            src_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+                            if src_fps > 0:
+                                source_frame_interval = 1.0 / src_fps
+                            logger.info(
+                                f"Camera {camera_id}: File source opened "
+                                f"({src_fps:.2f} fps, looping on EOF)"
+                            )
                         
                         # Update camera status to online
                         self.camera_manager.update_status(camera_id, 'online')
@@ -96,9 +121,17 @@ class StreamIngestion:
 
                 # Read frame
                 ret, frame = cap.read()
-                
+
                 if not ret or frame is None:
-                    raise Exception("Failed to read frame")
+                    if is_file_source:
+                        # EOF on a file is not an error — rewind and keep playing
+                        # so the demo clip behaves like a continuous feed.
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = cap.read()
+                        if not ret or frame is None:
+                            raise Exception("Failed to read frame after rewind")
+                    else:
+                        raise Exception("Failed to read frame")
 
                 # Track FPS
                 current_time = time.time()
@@ -112,7 +145,11 @@ class StreamIngestion:
                 if len(self.fps_trackers[camera_id]) >= 2:
                     time_diff = self.fps_trackers[camera_id][-1] - self.fps_trackers[camera_id][0]
                     fps = (len(self.fps_trackers[camera_id]) - 1) / time_diff if time_diff > 0 else 0
-                    self.camera_manager.update_status(camera_id, 'online', fps=fps)
+                    # Throttle DB writes to ~1/s. Writing on every frame issued
+                    # hundreds of UPDATEs per second and flooded the log.
+                    if current_time - last_status_update >= 1.0:
+                        self.camera_manager.update_status(camera_id, 'online', fps=fps)
+                        last_status_update = current_time
 
                 # Put frame in queue (drop oldest if full)
                 try:
@@ -125,6 +162,15 @@ class StreamIngestion:
                         logger.debug(f"Camera {camera_id}: Dropped frame (queue full)")
                     except:
                         pass
+
+                # Pace file playback to the clip's native frame rate so a demo
+                # video behaves like a real-time feed instead of decoding at
+                # several hundred fps and saturating the queue.
+                if is_file_source and source_frame_interval > 0:
+                    elapsed = time.time() - current_time
+                    remaining = source_frame_interval - elapsed
+                    if remaining > 0:
+                        time.sleep(remaining)
 
             except Exception as e:
                 logger.error(f"Camera {camera_id}: Error - {e}")

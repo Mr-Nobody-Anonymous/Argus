@@ -11,6 +11,7 @@ Refactored into a Decentralized Multi-Agent Swarm Consortium:
 """
 import asyncio
 import logging
+import os
 import threading
 import time
 import cv2
@@ -67,10 +68,22 @@ class ProcessingCoordinator:
         self.user_attention_tracker = get_user_attention_tracker()
         self.logic_mutator = get_logic_mutator()
         self.state_recovery = get_state_recovery_manager()
+        # ARGUS_NO_SWARM=1 forces the linear pipeline regardless of config.
+        # This exists so the swarm can be A/B benchmarked against a baseline
+        # (see tests/swarm_benchmark.py). An optimiser that cannot be measured
+        # against a control is indistinguishable from a bug - this codebase has
+        # already had one instance where the broker silently starved the
+        # detector to zero detections on CPU.
+        _swarm_disabled_by_env = os.environ.get("ARGUS_NO_SWARM", "").strip().lower() in (
+            "1", "true", "yes"
+        )
         self._swarm_enabled = (
-            self.config.consortium.enabled
+            not _swarm_disabled_by_env
+            and self.config.consortium.enabled
             and self.config.yolo_agent.enabled
         )
+        if _swarm_disabled_by_env:
+            logger.info("ARGUS_NO_SWARM set - using the linear baseline pipeline")
 
         self.processing_threads: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}

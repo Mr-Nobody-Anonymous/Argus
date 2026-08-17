@@ -27,8 +27,8 @@ import cv2
 import numpy as np
 
 from backend.config.config import get_config
-from .license_plate_recognition import get_license_plate_recognition
-from ..core_engine.consortium_broker import (
+from backend.services.vision.license_plate_recognition import get_license_plate_recognition
+from backend.services.core_engine.consortium_broker import (
     AgentBid,
     ConsortiumBroker,
     ResourceAllocation,

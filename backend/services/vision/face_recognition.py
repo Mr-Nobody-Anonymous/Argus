@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
-from backend.config.config import get_config, section_to_dict
+from backend.config.config import get_config, section_to_dict, resolve_path
 from backend.database.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class FaceRecognition:
         self.known_faces: List[dict] = []
         
         # Known faces directory for storing images
-        self.faces_dir = Path("data/known_faces")
+        self.faces_dir = resolve_path("data/known_faces")
         self.faces_dir.mkdir(parents=True, exist_ok=True)
         
         if self.enabled:
@@ -72,22 +72,38 @@ class FaceRecognition:
                     dnn_available = False
             
             if not dnn_available:
-                # Use Haar cascade as fallback
-                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                if os.path.exists(cascade_path):
+                # Use Haar cascade as fallback. `cv2.CascadeClassifier` and
+                # `cv2.data` are unavailable in some slim/headless OpenCV
+                # builds, so probe for them rather than assuming.
+                cascade_path = ""
+                if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+                    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+
+                if not hasattr(cv2, "CascadeClassifier"):
+                    logger.warning(
+                        "cv2.CascadeClassifier unavailable in this OpenCV build - "
+                        "face detection disabled"
+                    )
+                    self.face_detector = None
+                elif cascade_path and os.path.exists(cascade_path):
                     self.face_detector = cv2.CascadeClassifier(cascade_path)
                     logger.info("Loaded Haar cascade face detector")
                 else:
-                    # Download is handled by first detection
-                    self.face_detector = cv2.CascadeClassifier()
-                    if not self.face_detector.load(cascade_path):
-                        # Try to create one from OpenCV's built-in data
-                        logger.warning("Face detector cascade not found, detection may fail")
-                        self.face_detector = None
-            
-            # Use LBPH face recognizer for identification
-            self.face_recognizer = cv2.face.LBPHFaceRecognizer_create()
-            
+                    logger.warning("Face detector cascade not found, detection may fail")
+                    self.face_detector = None
+
+            # LBPH recognizer lives in opencv-contrib (cv2.face). It is optional:
+            # matching falls back to the histogram comparison in _match_face().
+            if hasattr(cv2, "face") and hasattr(cv2.face, "LBPHFaceRecognizer_create"):
+                self.face_recognizer = cv2.face.LBPHFaceRecognizer_create()
+            else:
+                self.face_recognizer = None
+                logger.info(
+                    "cv2.face (opencv-contrib-python) not installed - "
+                    "using histogram-based face matching fallback"
+                )
+
+
             # Load known faces from database
             self._load_known_faces()
             
@@ -138,7 +154,9 @@ class FaceRecognition:
                                 'face_image': face_img
                             })
             
-            elif isinstance(self.face_detector, cv2.CascadeClassifier):
+            elif hasattr(cv2, "CascadeClassifier") and isinstance(
+                self.face_detector, cv2.CascadeClassifier
+            ):
                 # Haar cascade detection
                 detected = self.face_detector.detectMultiScale(
                     gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)

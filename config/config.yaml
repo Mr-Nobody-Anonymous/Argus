@@ -5,6 +5,19 @@ system:
   log_level: INFO
   snapshot_dir: data/snapshots
 
+# Data Retention / Privacy
+# Enforced by a background scheduler (backend/services/management/retention.py).
+# Face embeddings are intentionally excluded: remove them explicitly via
+# DELETE /api/v1/faces/{id} so recognition never breaks silently.
+retention:
+  enabled: true
+  interval_hours: 6
+  events_days: 90
+  snapshots_days: 30
+  anomalies_days: 30
+  plates_days: 30
+  audit_days: 365
+
 # Cross-Camera Tracking Configuration
 cross_camera_tracker:
   enabled: true

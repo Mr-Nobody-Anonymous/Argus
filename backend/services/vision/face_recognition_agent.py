@@ -26,8 +26,8 @@ import cv2
 import numpy as np
 
 from backend.config.config import get_config
-from .face_recognition import get_face_recognition
-from ..core_engine.consortium_broker import (
+from backend.services.vision.face_recognition import get_face_recognition
+from backend.services.core_engine.consortium_broker import (
     AgentBid,
     ConsortiumBroker,
     ResourceAllocation,

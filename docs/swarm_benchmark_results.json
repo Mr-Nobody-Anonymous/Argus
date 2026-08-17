@@ -1,0 +1,32 @@
+{
+  "clip": "/home/user/Argus/data/demo_clip.mp4",
+  "frames": 40,
+  "results": [
+    {
+      "mode": "linear",
+      "frames": 40,
+      "wall_seconds": 31.58,
+      "fps": 1.27,
+      "latency_p50_ms": 784.2,
+      "latency_p95_ms": 840.84,
+      "latency_mean_ms": 789.59,
+      "detections_total": 512,
+      "detections_mean": 12.8,
+      "frames_with_zero_detections": 0,
+      "cpu_percent": 98.7
+    },
+    {
+      "mode": "swarm",
+      "frames": 40,
+      "wall_seconds": 24.87,
+      "fps": 1.61,
+      "latency_p50_ms": 612.78,
+      "latency_p95_ms": 750.53,
+      "latency_mean_ms": 621.64,
+      "detections_total": 512,
+      "detections_mean": 12.8,
+      "frames_with_zero_detections": 0,
+      "cpu_percent": 98.7
+    }
+  ]
+}

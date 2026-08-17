@@ -112,6 +112,20 @@ class Database:
             )
         """)
 
+        # Known faces table for face recognition.
+        # Created here (not lazily inside FaceRecognition) so that the
+        # /api/v1/faces endpoints work even when the face-recognition models
+        # fail to initialise or the optional deps are missing.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS known_faces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                encoding TEXT NOT NULL,
+                image_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         self.conn.commit()
         logger.info("Database tables created successfully")
 
@@ -155,8 +169,13 @@ def get_db():
         from backend.config.config import get_config
         config = get_config()
         # Parse path from URL (remove sqlite:/// prefix)
-        db_path = config.database.url.replace("sqlite:///", "")
-        db = Database(db_path)
+        db_path = Path(config.database.url.replace("sqlite:///", ""))
+        # Anchor relative paths to the project root so the DB lands in the same
+        # place no matter which directory the process was launched from.
+        if not db_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent.parent
+            db_path = (project_root / db_path).resolve()
+        db = Database(str(db_path))
     return db
 
 

@@ -2,6 +2,7 @@
 AI Inference & Tracking Accuracy Sanity Test
 Feeds mock video through YOLOv8 + BoT-SORT pipeline
 """
+import os
 import cv2
 import time
 import numpy as np
@@ -152,8 +153,6 @@ def run_pipeline_sanity_test(video_path: str = None):
 
 def run_simulation_mode(video_path: str):
     """Simulation mode when YOLO is not available."""
-    import os
-    
     if not os.path.exists(video_path):
         video_path = create_mock_traffic_video()
     
@@ -173,5 +172,13 @@ def run_simulation_mode(video_path: str):
     return True
 
 if __name__ == "__main__":
-    import torch
+    # NOTE: torch is pulled in by ultralytics when it is installed; importing it
+    # unconditionally here defeats the simulation-mode fallback below, so the
+    # test only reports the accelerator when torch is actually present.
+    try:
+        import torch
+        print(f"torch {torch.__version__} (cuda available: {torch.cuda.is_available()})")
+    except ImportError:
+        print("torch not installed - running without GPU acceleration")
+
     run_pipeline_sanity_test("mock_10s_traffic.mp4")

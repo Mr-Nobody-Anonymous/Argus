@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Argus — optional AI extras
+#
+#     pip install -r requirements-optional.txt
+#
+# These packages unlock the advanced vision features. They are intentionally
+# kept out of requirements.txt because they are large, slow to build, and
+# frequently lag behind new Python releases (several do not yet publish wheels
+# for Python 3.12+). Argus detects each one at runtime and falls back to a
+# documented degraded mode when it is missing:
+#
+#   paddleocr / paddlepaddle -> LPR falls back to basic OCR heuristics
+#   insightface              -> face recognition falls back to OpenCV detection
+#   deepface                 -> emotion detection is disabled
+#   mediapipe                -> pose estimation falls back to bbox heuristics
+#   anomalib                 -> anomaly detection uses the built-in detectors
+#   pytorchvideo             -> video-understanding extras are disabled
+#   opencv-contrib-python    -> enables cv2.face LBPH recogniser (see note)
+#
+# NOTE: opencv-contrib-python conflicts with opencv-python-headless. Install it
+# only if you need the LBPH face recogniser and are not running headless.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── License Plate Recognition & OCR ──
+paddleocr>=2.7,<3.0
+paddlepaddle>=2.6
+
+# ── Face recognition & emotion analysis ──
+insightface>=0.7
+deepface>=0.0.93
+
+# ── Pose estimation ──
+mediapipe>=0.10
+
+# ── Anomaly detection ──
+anomalib>=1.2
+
+# ── Video understanding ──
+pytorchvideo>=0.1.5
+
+# ── Optional infrastructure clients (Kafka / Elasticsearch / Qdrant) ──
+# Required by tests/infrastructure_healthcheck.py to probe these services.
+kafka-python>=2.0
+elasticsearch>=8.0
+qdrant-client>=1.7
+django>=4.2,<6.0

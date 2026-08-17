@@ -25,8 +25,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ...config.config import get_config
-from ..management.event_store import get_event_store
+from backend.config.config import get_config
+from backend.services.management.event_store import get_event_store
 
 logger = logging.getLogger(__name__)
 

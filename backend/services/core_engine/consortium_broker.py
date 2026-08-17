@@ -82,6 +82,12 @@ class ConsortiumBroker:
     urgency, contextual relevance, and compute cost.
     """
 
+    # The object detector feeds every downstream stage (tracking, zones, rules,
+    # events). Starving it does not degrade the system gracefully - it blinds
+    # it. Optional enrichment agents (face, LPR) absorb contention instead.
+    PRIMARY_AGENT_ID = "yolo_agent"
+    PRIMARY_MIN_THROTTLE = 1.0
+
     def __init__(self):
         self.config = get_config()
         self.consortium_config = self.config.consortium
@@ -103,7 +109,7 @@ class ConsortiumBroker:
         self._registered_agents: Dict[str, str] = {}  # agent_id -> domain
 
         # Default total budget per frame (ms) — split across agents
-        self._total_budget_ms: float = 33.0  # ~30 FPS target
+        self._total_budget_ms: float = 33.0  # ~30 FPS target (GPU-class)
 
         # Telemetry monitor reference (lazy init — avoids circular imports)
         self._telemetry_monitor = None
@@ -304,11 +310,33 @@ class ConsortiumBroker:
                 priority_boost = max(0.5, min(2.0, scores[agent_id] / max(mean_score, 0.01)))
                 bid = self._bids[agent_id]
 
-                # Throttle factor: if allocated budget < compute cost, throttle
-                if bid.compute_cost > 0 and allocated_budget < bid.compute_cost:
-                    throttle = allocated_budget / bid.compute_cost
+                # Throttle factor: if allocated budget < compute cost, throttle.
+                #
+                # The nominal budget (33 ms => 30 FPS) encodes a GPU assumption.
+                # On CPU a single YOLO pass costs ~130 ms, so every agent used
+                # to sit at the floor throttle permanently: the detector ran
+                # inference once, then replayed a stale result forever while
+                # /health still reported model_loaded=true.
+                #
+                # The budget is a *relative* scheduling target, not a hardware
+                # guarantee. When the workload genuinely cannot fit the nominal
+                # frame time, scale the budget to what the hardware actually
+                # delivers (`_effective_budget_ms`) so throttling only expresses
+                # "this agent is expensive relative to its peers".
+                effective_total = self._effective_budget_ms()
+                effective_budget = effective_total * norm_score
+
+                if bid.compute_cost > 0 and effective_budget < bid.compute_cost:
+                    throttle = effective_budget / bid.compute_cost
                 else:
                     throttle = 1.0
+
+                # The primary detector must never be starved into replaying a
+                # stale frame: everything downstream (tracking, zones, rules,
+                # events) is derived from it. Degrade the optional enrichment
+                # agents instead.
+                if agent_id == self.PRIMARY_AGENT_ID:
+                    throttle = max(throttle, self.PRIMARY_MIN_THROTTLE)
 
                 # Apply stress multiplier to throttle as well for aggressive downscale
                 throttle *= stress_multiplier
@@ -367,6 +395,21 @@ class ConsortiumBroker:
                 "bidding_strategy": self.bidding_strategy,
             }
 
+    def _effective_budget_ms(self) -> float:
+        """
+        The per-frame budget the hardware can actually deliver.
+
+        Returns the configured nominal budget when the workload fits inside it
+        (GPU-class hardware). When the summed agent cost exceeds it - the normal
+        case on CPU - the total demand is returned instead, so proportional
+        allocation still distributes work fairly rather than throttling every
+        agent to the floor because the machine is not a GPU.
+        """
+        total_demand = sum(
+            b.compute_cost for b in self._bids.values() if b.compute_cost > 0
+        )
+        return max(self._total_budget_ms, total_demand)
+
     def set_total_budget(self, budget_ms: float):
         """Set the total per-frame budget in milliseconds."""
         with self._lock:
@@ -387,7 +430,7 @@ class ConsortiumBroker:
         """Lazy-init telemetry monitor reference (avoids circular imports)."""
         if self._telemetry_monitor is None:
             try:
-                from ..management.telemetry_monitor import get_telemetry_monitor as _g_tm
+                from backend.services.management.telemetry_monitor import get_telemetry_monitor as _g_tm
                 self._telemetry_monitor = _g_tm()
             except Exception as e:
                 logger.warning(f"Could not init telemetry monitor: {e}")
@@ -404,7 +447,7 @@ class ConsortiumBroker:
         """Lazy-init user attention tracker reference (avoids circular imports)."""
         if self._attention_tracker is None:
             try:
-                from ..management.user_attention_tracker import get_user_attention_tracker as _g_uat
+                from backend.services.management.user_attention_tracker import get_user_attention_tracker as _g_uat
                 self._attention_tracker = _g_uat()
             except Exception as e:
                 logger.warning(f"Could not init attention tracker: {e}")

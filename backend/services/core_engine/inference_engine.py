@@ -4,10 +4,21 @@ Inference engine using YOLOv8 for object detection
 import logging
 import time
 import threading
+from pathlib import Path
 from typing import List, Dict, Optional
 import numpy as np
-from ultralytics import YOLO
-from backend.config.config import get_config
+
+# Ultralytics is a heavy optional dependency. Import it lazily/defensively so the
+# API can still boot (and report degraded health) when it is not installed —
+# consistent with how the vision/analytics services handle their optional deps.
+try:
+    from ultralytics import YOLO
+    ULTRALYTICS_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on environment
+    YOLO = None
+    ULTRALYTICS_AVAILABLE = False
+
+from backend.config.config import get_config, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +34,24 @@ class InferenceEngine:
 
     def _load_model(self):
         """Load YOLO model"""
+        if not ULTRALYTICS_AVAILABLE:
+            logger.warning(
+                "ultralytics is not installed - object detection is disabled. "
+                "Install it with: pip install ultralytics"
+            )
+            self.model_loaded = False
+            return
+
         try:
             model_path = self.config.inference.model
             logger.info(f"Loading YOLO model: {model_path}")
-            
+
+            # Prefer a model bundled in backend/models/, otherwise let
+            # ultralytics resolve/download the weights by name.
+            local_model = resolve_path(Path("backend") / "models" / Path(model_path).name)
+            if local_model.exists():
+                model_path = str(local_model)
+
             self.model = YOLO(model_path)
             
             # Warm up model

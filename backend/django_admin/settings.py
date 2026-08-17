@@ -3,7 +3,10 @@ Django settings for Argus admin interface
 """
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent.parent.parent.parent
+# settings.py lives at <repo>/backend/django_admin/settings.py, so the repo root
+# is three levels up. Going four levels up pointed BASE_DIR outside the project
+# and put data/argus_django.db in the parent directory.
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = "django-insecure-argus-admin-key-change-in-production"
 DEBUG = True
@@ -19,10 +22,21 @@ INSTALLED_APPS = [
     'backend.django_admin',
 ]
 
+# Point Django at the SAME SQLite file the FastAPI backend uses, so the admin
+# lists real cameras/zones/events rather than an empty parallel database.
+# Django's own auth/session tables are created alongside them via migrate.
+def _argus_db_path():
+    try:
+        from backend.config.config import get_config, resolve_path
+        return resolve_path(get_config().database.url.replace("sqlite:///", ""))
+    except Exception:
+        return BASE_DIR / 'data' / 'argus.db'
+
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'data' / 'argus_django.db',
+        'NAME': str(_argus_db_path()),
     }
 }
 

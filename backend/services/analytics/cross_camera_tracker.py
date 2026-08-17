@@ -33,8 +33,8 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-from ...config.config import get_config
-from ...database.db import get_db
+from backend.config.config import get_config
+from backend.database.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,10 @@ class CrossCameraTracker:
 
     def __init__(self):
         self.db = get_db()
-        self.lock = threading.Lock()
+        # RLock: several public methods (e.g. get_tracker_statistics ->
+        # get_targeted_persons, clear_old_tracks -> stop_target) call other
+        # lock-taking methods while holding the lock. A plain Lock deadlocks.
+        self.lock = threading.RLock()
         self.config = get_config()
 
         # Global person tracks across all cameras

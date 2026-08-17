@@ -33,3 +33,8 @@ yolov8*.pt
 # IDE
 .vscode/
 .idea/
+
+# ── Added during production hardening ──
+frontend/dist/
+frontend/node_modules/
+data/argus_django.db

@@ -2,10 +2,13 @@
 Main FastAPI application for Argus
 """
 import logging
+import os
 import sys
 import time
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import (
+    FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request, status
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,32 +19,49 @@ import psutil
 import cv2
 import numpy as np
 
-# Add backend to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Ensure the project root is importable so `backend.*` absolute imports resolve
+# whether the app is launched from the repo root or from inside backend/.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from api.models import (
+from backend.api.models import (
     Camera, CameraCreate, CameraUpdate,
     Zone, ZoneCreate,
     Event,
-    HealthResponse, MetricsResponse
+    HealthResponse, MetricsResponse,
+    LoginRequest, RefreshRequest
 )
-from services.management.camera_manager import get_camera_manager
-from services.management.zone_manager import get_zone_manager
-from services.management.event_store import get_event_store
-from services.core_engine.processing_coordinator import get_processing_coordinator
-from services.core_engine.inference_engine import get_inference_engine
-from services.management.mqtt_publisher import get_mqtt_publisher
-from services.vision.image_enhancement import get_image_enhancement
-from services.vision.face_recognition import get_face_recognition
-from services.vision.license_plate_recognition import get_license_plate_recognition
-from services.analytics.anomaly_detector import get_anomaly_detector
-from services.vision.pose_estimator import get_pose_estimator
-from services.core_engine.deep_tracker import get_deep_tracker
-from services.analytics.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
-from database.db import get_db, close_db
-from config.config import get_config
-from api.stream_routes import router as stream_router
-from api.stream_ws import router as legacy_stream_router  # Legacy, avoid route conflicts
+from backend.services.management.camera_manager import get_camera_manager
+from backend.services.management.zone_manager import get_zone_manager
+from backend.services.management.event_store import get_event_store
+from backend.services.core_engine.processing_coordinator import get_processing_coordinator
+from backend.services.core_engine.inference_engine import get_inference_engine
+from backend.services.management.mqtt_publisher import get_mqtt_publisher
+from backend.services.vision.image_enhancement import get_image_enhancement
+from backend.services.vision.face_recognition import get_face_recognition
+from backend.services.vision.license_plate_recognition import get_license_plate_recognition
+from backend.services.analytics.anomaly_detector import get_anomaly_detector
+from backend.services.vision.pose_estimator import get_pose_estimator
+from backend.services.core_engine.deep_tracker import get_deep_tracker
+from backend.services.analytics.cross_camera_tracker import get_cross_camera_tracker, SKLEARN_AVAILABLE
+from backend.database.db import get_db, close_db
+from backend.config.config import get_config, resolve_path
+from backend.api.stream_routes import router as stream_router
+from backend.api.stream_ws import router as ws_stream_router
+from backend.api.auth import (
+    AuthUser, authenticate_user, create_token, token_to_user,
+    get_current_user, require_role, auth_enabled,
+    ROLE_ADMIN, ROLE_OPERATOR, ROLE_VIEWER,
+    is_locked_out, record_failed_attempt, clear_failed_attempts, client_key,
+    EPHEMERAL_SECRET_IN_USE,
+)
+from backend.services.management.audit_log import get_audit_log
+from backend.services.management.retention import get_retention_scheduler
+from backend.api.observability import (
+    get_metrics_registry, configure_logging,
+)
+from backend.config.config import find_unresolved_secrets
 
 # Configure logging
 logging.basicConfig(
@@ -50,23 +70,83 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Apply ARGUS_LOG_FORMAT/ARGUS_LOG_LEVEL (json logging for production ingestion)
+configure_logging()
+
 # Startup time for uptime calculation
 startup_time = time.time()
+
+
+def _validate_startup_config():
+    """
+    Fail fast on configuration problems instead of discovering them mid-run.
+
+    Currently checks for unresolved ${VAR} secret references. Anything found is
+    reported by dotted path so the operator knows exactly which variable to set.
+    """
+    try:
+        import yaml
+        from backend.config.config import PROJECT_ROOT
+        config_file = PROJECT_ROOT / "config" / "config.yaml"
+        if not config_file.exists():
+            return
+        with open(config_file) as fh:
+            raw = yaml.safe_load(fh)
+        unresolved = find_unresolved_secrets(raw)
+        if unresolved:
+            logger.error("Configuration has unresolved secret references:")
+            for item in unresolved:
+                logger.error(f"  - {item}")
+            logger.error("Set these environment variables (see .env.example).")
+    except Exception as exc:  # noqa: BLE001 - validation must not block startup
+        logger.warning(f"Config validation skipped: {exc}")
+
+
+def _start_retention_scheduler():
+    try:
+        get_retention_scheduler().start()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Could not start retention scheduler: {exc}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle management"""
     logger.info("Starting Argus API...")
-    
+
+    # ── Security posture banner ──
+    # Surfaced loudly at startup so an insecure configuration can never be in
+    # effect without being obvious in the logs.
+    if not auth_enabled():
+        logger.warning("=" * 72)
+        logger.warning("AUTHENTICATION IS DISABLED (ARGUS_DISABLE_AUTH). Development use only.")
+        logger.warning("Every endpoint, including camera and identity management, is OPEN.")
+        logger.warning("=" * 72)
+    else:
+        logger.info("Authentication ENABLED (JWT, roles: admin/operator/viewer)")
+        if EPHEMERAL_SECRET_IN_USE:
+            logger.warning(
+                "ARGUS_JWT_SECRET unset - using an ephemeral key; tokens die on restart."
+            )
+
+    # Fail fast on unresolved ${VAR} secret references.
+    _validate_startup_config()
+
     # Initialize database
     get_db()
-    
+
+    # Audit log lives in the same database
+    get_audit_log()
+
     # Initialize new services
     get_license_plate_recognition().init_database()
     get_anomaly_detector().init_database()
     get_pose_estimator()
     get_deep_tracker()
+
+    # Start the retention/purge scheduler (privacy: data must not accumulate
+    # forever). Runs in a daemon thread; interval and policy come from config.
+    _start_retention_scheduler()
     
     # Start processing for existing cameras
     coordinator = get_processing_coordinator()
@@ -89,27 +169,233 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Browsers reject `Access-Control-Allow-Origin: *` together with credentials,
+# so an explicit allowlist is required.
+#
+# Origins come from ARGUS_CORS_ORIGINS (comma-separated). The permissive
+# catch-all regex that previously matched ANY http(s) host was a sandbox-preview
+# convenience and is NOT enabled by default - it effectively disabled origin
+# checking. Set ARGUS_CORS_ORIGIN_REGEX explicitly if you need it (e.g. for a
+# tunnelled preview host).
+_default_cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_cors_env = os.environ.get("ARGUS_CORS_ORIGINS", "").strip()
+_cors_origins = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()]
+    if _cors_env else _default_cors_origins
+)
+_cors_origin_regex = os.environ.get("ARGUS_CORS_ORIGIN_REGEX", "").strip() or None
+
+if _cors_origin_regex:
+    logger.warning(
+        "ARGUS_CORS_ORIGIN_REGEX is set (%s) - ensure it is not overly permissive.",
+        _cors_origin_regex,
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files for snapshots
-snapshot_dir = Path("data/snapshots")
-snapshot_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/snapshots", StaticFiles(directory=str(snapshot_dir)), name="snapshots")
 
-# Register WebSocket and streaming endpoints
+# Paths audited by the login handler itself (which knows the attempted
+# username even when authentication fails), so the middleware skips them.
+_AUDIT_EXEMPT_PATHS = {"/api/v1/auth/login", "/api/v1/auth/refresh"}
+
+
+@app.middleware("http")
+async def audit_mutations(request: Request, call_next):
+    """
+    Audit every state-changing request.
+
+    Implemented as middleware rather than per-handler decoration so a new
+    mutating endpoint is covered automatically - an audit trail with gaps is
+    worse than none, because it implies completeness it does not have.
+    """
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return await call_next(request)
+
+    path = request.url.path
+    if path in _AUDIT_EXEMPT_PATHS:
+        return await call_next(request)
+
+    response = await call_next(request)
+
+    try:
+        # Resolve the caller from the bearer token. Unauthenticated attempts on
+        # protected routes are still worth recording.
+        principal, role, user_id = "anonymous", None, None
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            token_user = token_to_user(header[7:].strip())
+            if token_user:
+                principal, role, user_id = token_user.username, token_user.role, token_user.id
+        elif not auth_enabled():
+            principal, role = "dev-auth-disabled", ROLE_ADMIN
+
+        # Derive resource + id from /api/v1/<resource>/<id>
+        parts = [p for p in path.split("/") if p]
+        resource = parts[2] if len(parts) > 2 else path
+        resource_id = parts[3] if len(parts) > 3 else None
+
+        if response.status_code < 400:
+            outcome = "success"
+        elif response.status_code in (401, 403):
+            outcome = "denied"
+        else:
+            outcome = "error"
+
+        get_audit_log().record(
+            username=principal,
+            user_id=user_id,
+            role=role,
+            action=request.method.lower(),
+            resource=resource,
+            resource_id=resource_id,
+            outcome=outcome,
+            client_ip=request.client.host if request.client else None,
+            detail=f"{request.method} {path} -> {response.status_code}",
+        )
+    except Exception as exc:  # noqa: BLE001 - auditing must never break a request
+        logger.error(f"Audit middleware error: {exc}")
+
+    return response
+
+# Mount static files for snapshots
+snapshot_dir = resolve_path(get_config().system.snapshot_dir)
+snapshot_dir.mkdir(parents=True, exist_ok=True)
+# NOTE: snapshots are event evidence containing identifiable people, so the
+# bare StaticFiles mount is only enabled when auth is explicitly disabled for
+# local development. Authenticated access goes through
+# GET /api/snapshots/{camera_id}/{filename}, which enforces the viewer role and
+# validates the path against traversal.
+if not auth_enabled():
+    app.mount("/snapshots", StaticFiles(directory=str(snapshot_dir)), name="snapshots")
+    logger.warning(
+        "Auth disabled: /snapshots is mounted WITHOUT access control (development only)."
+    )
+
+# Register WebSocket and streaming endpoints.
+# stream_routes -> /api/snapshots/... and /api/mjpeg/stream/{camera_id}
+# stream_ws     -> /api/ws/stream/{camera_id}  (documented WebSocket protocol)
 app.include_router(stream_router, prefix="/api")
+app.include_router(ws_stream_router, prefix="/api")
+
+
+# ==================== Authentication Endpoints ====================
+
+@app.post("/api/v1/auth/login", response_model=dict)
+async def login(request: Request, credentials: LoginRequest):
+    """
+    Authenticate against the Django `auth_user` table and issue JWTs.
+
+    Failed attempts are throttled per (client IP, username) to blunt credential
+    stuffing, and both outcomes are written to the audit log.
+    """
+    audit = get_audit_log()
+    throttle_key = client_key(request, credentials.username)
+    client_ip = request.client.host if request.client else None
+
+    locked, retry_after = is_locked_out(throttle_key)
+    if locked:
+        audit.record(
+            username=credentials.username, action="login", resource="auth",
+            outcome="locked_out", client_ip=client_ip,
+            detail=f"Locked for another {retry_after}s",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed attempts. Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    user = authenticate_user(credentials.username, credentials.password)
+    if user is None:
+        record_failed_attempt(throttle_key)
+        audit.record(
+            username=credentials.username, action="login", resource="auth",
+            outcome="failure", client_ip=client_ip,
+        )
+        # Identical message for unknown user and wrong password - do not leak
+        # which usernames exist.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    clear_failed_attempts(throttle_key)
+    audit.record(
+        username=user.username, user_id=user.id, role=user.role,
+        action="login", resource="auth", outcome="success", client_ip=client_ip,
+    )
+    return {
+        "access_token": create_token(user, "access"),
+        "refresh_token": create_token(user, "refresh"),
+        "token_type": "bearer",
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+
+
+@app.post("/api/v1/auth/refresh", response_model=dict)
+async def refresh_token(payload: RefreshRequest):
+    """Exchange a valid refresh token for a new access token."""
+    user = token_to_user(payload.refresh_token, expected_type="refresh")
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {
+        "access_token": create_token(user, "access"),
+        "token_type": "bearer",
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+
+
+@app.get("/api/v1/auth/me", response_model=dict)
+async def whoami(user: AuthUser = Depends(get_current_user)):
+    """Return the authenticated principal and its effective role."""
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "is_superuser": user.is_superuser,
+        "email": user.email,
+    }
+
+
+@app.get("/api/v1/audit", response_model=dict)
+async def get_audit_entries(
+    username: Optional[str] = Query(None),
+    resource: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    _user: AuthUser = Depends(require_role(ROLE_ADMIN)),
+):
+    """Read the audit trail. Admin only."""
+    entries, total = get_audit_log().query(
+        username=username, resource=resource, action=action,
+        outcome=outcome, limit=limit, offset=offset,
+    )
+    return {"entries": entries, "total": total, "limit": limit, "offset": offset}
 
 
 # ==================== Camera Endpoints ====================
 
-@app.get("/api/v1/cameras", response_model=dict)
+@app.get("/api/v1/cameras", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_cameras():
     """Get all cameras"""
     try:
@@ -121,7 +407,7 @@ async def get_cameras():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/cameras", response_model=dict)
+@app.post("/api/v1/cameras", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def create_camera(camera: CameraCreate):
     """Create a new camera"""
     try:
@@ -151,7 +437,7 @@ async def create_camera(camera: CameraCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/cameras/{camera_id}", response_model=dict)
+@app.get("/api/v1/cameras/{camera_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_camera(camera_id: int):
     """Get camera by ID"""
     try:
@@ -167,7 +453,7 @@ async def get_camera(camera_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/api/v1/cameras/{camera_id}", response_model=dict)
+@app.put("/api/v1/cameras/{camera_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def update_camera(camera_id: int, camera: CameraUpdate):
     """Update camera"""
     try:
@@ -192,7 +478,7 @@ async def update_camera(camera_id: int, camera: CameraUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/v1/cameras/{camera_id}")
+@app.delete("/api/v1/cameras/{camera_id}", dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def delete_camera(camera_id: int):
     """Delete camera"""
     try:
@@ -218,7 +504,7 @@ async def delete_camera(camera_id: int):
 
 # ==================== Zone Endpoints ====================
 
-@app.get("/api/v1/zones", response_model=dict)
+@app.get("/api/v1/zones", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_zones(camera_id: Optional[int] = Query(None)):
     """Get zones, optionally filtered by camera"""
     try:
@@ -233,7 +519,7 @@ async def get_zones(camera_id: Optional[int] = Query(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/zones", response_model=dict)
+@app.post("/api/v1/zones", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def create_zone(zone: ZoneCreate):
     """Create a new zone"""
     try:
@@ -250,7 +536,7 @@ async def create_zone(zone: ZoneCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/api/v1/zones/{zone_id}", response_model=dict)
+@app.put("/api/v1/zones/{zone_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def update_zone(zone_id: int, zone: ZoneCreate):
     """Update zone"""
     try:
@@ -271,7 +557,7 @@ async def update_zone(zone_id: int, zone: ZoneCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/v1/zones/{zone_id}")
+@app.delete("/api/v1/zones/{zone_id}", dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def delete_zone(zone_id: int):
     """Delete zone"""
     try:
@@ -289,7 +575,7 @@ async def delete_zone(zone_id: int):
 
 # ==================== Event Endpoints ====================
 
-@app.get("/api/v1/events", response_model=dict)
+@app.get("/api/v1/events", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_events(
     camera_id: Optional[int] = Query(None),
     from_time: Optional[str] = Query(None),
@@ -330,7 +616,7 @@ async def get_events(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/events/stats", response_model=dict)
+@app.get("/api/v1/events/stats", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_event_stats(
     camera_id: Optional[int] = None,
     hours: int = 24
@@ -345,7 +631,7 @@ async def get_event_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/events/{event_id}", response_model=dict)
+@app.get("/api/v1/events/{event_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_event(event_id: int):
     """Get event by ID"""
     try:
@@ -363,7 +649,7 @@ async def get_event(event_id: int):
 
 # ==================== Analysis Endpoints ====================
 
-@app.get("/api/v1/analysis/{camera_id}", response_model=dict)
+@app.get("/api/v1/analysis/{camera_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_camera_analysis(camera_id: int):
     """Get detailed analysis for a camera including speed, height, LPR, pose, and anomalies"""
     try:
@@ -405,7 +691,7 @@ async def get_camera_analysis(camera_id: int):
 
 # ==================== LPR Endpoints ====================
 
-@app.get("/api/v1/lpr", response_model=dict)
+@app.get("/api/v1/lpr", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_lpr_status():
     """Get license plate recognition status"""
     try:
@@ -422,7 +708,7 @@ async def get_lpr_status():
 
 # ==================== Anomaly Endpoints ====================
 
-@app.get("/api/v1/anomalies", response_model=dict)
+@app.get("/api/v1/anomalies", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_recent_anomalies(
     camera_id: Optional[int] = Query(None),
     limit: int = Query(100, le=500)
@@ -448,7 +734,7 @@ async def get_recent_anomalies(
 
 # ==================== Tracker Endpoints ====================
 
-@app.get("/api/v1/trackers", response_model=dict)
+@app.get("/api/v1/trackers", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_tracker_status():
     """Get deep tracker status and active tracks"""
     try:
@@ -465,7 +751,7 @@ async def get_tracker_status():
 
 # ==================== Pose Endpoints ====================
 
-@app.get("/api/v1/poses", response_model=dict)
+@app.get("/api/v1/poses", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_pose_status():
     """Get pose estimation status"""
     try:
@@ -478,7 +764,7 @@ async def get_pose_status():
 
 # ==================== Enhancement Endpoints ====================
 
-@app.post("/api/v1/enhance/analyze", response_model=dict)
+@app.post("/api/v1/enhance/analyze", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def analyze_image_quality(file: UploadFile = File(...)):
     """Upload an image/frame to analyze its quality"""
     try:
@@ -509,7 +795,7 @@ async def analyze_image_quality(file: UploadFile = File(...)):
 
 # ==================== Face Recognition Endpoints ====================
 
-@app.get("/api/v1/faces", response_model=dict)
+@app.get("/api/v1/faces", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def get_known_faces():
     """Get list of registered known faces"""
     try:
@@ -521,7 +807,7 @@ async def get_known_faces():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/faces/register", response_model=dict)
+@app.post("/api/v1/faces/register", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def register_face(name: str = Form(...), file: UploadFile = File(...)):
     """Register a new face for recognition"""
     try:
@@ -546,7 +832,7 @@ async def register_face(name: str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/v1/faces/{face_id}")
+@app.delete("/api/v1/faces/{face_id}", dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def delete_face(face_id: int):
     """Delete a registered face"""
     try:
@@ -558,7 +844,7 @@ async def delete_face(face_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/faces/status", response_model=dict)
+@app.get("/api/v1/faces/status", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_face_recognition_status():
     """Get face recognition system status"""
     try:
@@ -576,7 +862,7 @@ async def get_face_recognition_status():
 
 # ==================== Webcam Test Endpoints ====================
 
-@app.post("/api/v1/webcam/start", response_model=dict)
+@app.post("/api/v1/webcam/start", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def start_webcam(camera_id: int = 0):
     """Start webcam capture for testing (camera_id is the PC webcam index)"""
     try:
@@ -596,7 +882,7 @@ async def start_webcam(camera_id: int = 0):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/webcam/stop", response_model=dict)
+@app.post("/api/v1/webcam/stop", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def stop_webcam():
     """Stop webcam capture"""
     try:
@@ -609,7 +895,7 @@ async def stop_webcam():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/webcam/status", response_model=dict)
+@app.get("/api/v1/webcam/status", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_webcam_status():
     """Get webcam status"""
     try:
@@ -625,7 +911,7 @@ async def get_webcam_status():
 
 # ==================== Cross-Camera Tracker Endpoints ====================
 
-@app.get("/api/v1/cross-camera/tracks", response_model=dict)
+@app.get("/api/v1/cross-camera/tracks", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_cross_camera_tracks():
     """Get all active cross-camera tracks"""
     try:
@@ -636,7 +922,7 @@ async def get_cross_camera_tracks():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/cross-camera/targets", response_model=dict)
+@app.get("/api/v1/cross-camera/targets", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_cross_camera_targets():
     """Get all currently targeted persons"""
     try:
@@ -647,7 +933,7 @@ async def get_cross_camera_targets():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/cross-camera/target", response_model=dict)
+@app.post("/api/v1/cross-camera/target", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def create_cross_camera_target(person_id: str = Form(...), camera_id: int = Form(...), reason: str = Form("")):
     """Start targeted tracking for a person across cameras"""
     try:
@@ -659,7 +945,7 @@ async def create_cross_camera_target(person_id: str = Form(...), camera_id: int 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/v1/cross-camera/target/{person_id}")
+@app.delete("/api/v1/cross-camera/target/{person_id}", dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def delete_cross_camera_target(person_id: str):
     """Stop targeted tracking for a person"""
     try:
@@ -671,7 +957,7 @@ async def delete_cross_camera_target(person_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/cross-camera/path/{person_id}", response_model=dict)
+@app.get("/api/v1/cross-camera/path/{person_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_cross_camera_path(person_id: str):
     """Get tracking path for a specific person"""
     try:
@@ -683,7 +969,7 @@ async def get_cross_camera_path(person_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/cross-camera/predict/{person_id}", response_model=dict)
+@app.get("/api/v1/cross-camera/predict/{person_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def predict_person_trajectory(person_id: str, horizon_seconds: int = Query(30)):
     """Predict future trajectory for a tracked person"""
     try:
@@ -697,7 +983,7 @@ async def predict_person_trajectory(person_id: str, horizon_seconds: int = Query
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/cross-camera/graph", response_model=dict)
+@app.get("/api/v1/cross-camera/graph", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def get_camera_graph():
     """Get camera adjacency graph"""
     try:
@@ -708,7 +994,7 @@ async def get_camera_graph():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/cross-camera/graph", response_model=dict)
+@app.post("/api/v1/cross-camera/graph", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def set_camera_graph(graph: dict):
     """Set camera adjacency graph"""
     try:
@@ -720,7 +1006,7 @@ async def set_camera_graph(graph: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/cross-camera/clear-old", response_model=dict)
+@app.post("/api/v1/cross-camera/clear-old", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
 async def clear_old_tracks(max_age_hours: int = Query(24)):
     """Clear tracks older than specified hours"""
     try:
@@ -732,7 +1018,7 @@ async def clear_old_tracks(max_age_hours: int = Query(24)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/stats/learning", response_model=dict)
+@app.get("/api/v1/stats/learning", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_learning_stats():
     """Get learning statistics including behavior profiles and track analysis"""
     try:
@@ -769,7 +1055,7 @@ async def get_learning_stats():
 
 # ==================== Video Testing Endpoints ====================
 
-@app.post("/api/v1/video/process", response_model=dict)
+@app.post("/api/v1/video/process", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
 async def process_test_video(
     video_path: str = Form(...),
     camera_ids: str = Form(...),
@@ -794,7 +1080,7 @@ async def process_test_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/clusters", response_model=dict)
+@app.get("/api/v1/clusters", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_trajectory_clusters():
     """Get trajectory clustering analysis for tracked persons"""
     try:
@@ -804,6 +1090,24 @@ async def get_trajectory_clusters():
     except Exception as e:
         logger.error(f"Error getting clusters: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Observability ====================
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    """
+    Prometheus text exposition.
+
+    Unauthenticated by design so a scraper needs no credentials, matching the
+    convention for /health. It exposes operational counters only - no frames,
+    no identities, no event contents. Restrict at the network layer if needed.
+    """
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        get_metrics_registry().collect(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 # ==================== System Endpoints ====================
@@ -832,6 +1136,15 @@ async def health_check():
             "version": "2.1.0",
             "subsystems": {
                 "database": "ok",
+                # Security posture is reported so a misconfigured deployment is
+                # visible from monitoring, not just from the startup logs.
+                "security": {
+                    "auth_enabled": auth_enabled(),
+                    "ephemeral_jwt_secret": EPHEMERAL_SECRET_IN_USE,
+                    "cors_origins": _cors_origins,
+                    "cors_origin_regex": _cors_origin_regex,
+                },
+                "retention": get_retention_scheduler().status(),
                 "mqtt": "ok" if mqtt_publisher.is_connected() else "disconnected",
                 "cameras": {
                     "total": len(cameras),
@@ -880,7 +1193,7 @@ async def health_check():
         }
 
 
-@app.get("/api/v1/metrics", response_model=dict)
+@app.get("/api/v1/metrics", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_metrics():
     """Get system metrics"""
     try:

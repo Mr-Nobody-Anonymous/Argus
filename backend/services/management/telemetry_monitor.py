@@ -131,7 +131,7 @@ class TelemetryMonitor:
     def _load_config(self):
         """Load configuration — wrapped in try/except for import safety."""
         try:
-            from ...config.config import get_config
+            from backend.config.config import get_config
 
             self._config = get_config()
             self._telemetry_config = getattr(self._config, "telemetry", None)

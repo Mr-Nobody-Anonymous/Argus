@@ -27,8 +27,8 @@ import cv2
 import numpy as np
 
 from backend.config.config import get_config
-from .inference_engine import get_inference_engine
-from .consortium_broker import (
+from backend.services.core_engine.inference_engine import get_inference_engine
+from backend.services.core_engine.consortium_broker import (
     AgentBid,
     ConsortiumBroker,
     ResourceAllocation,
@@ -120,6 +120,8 @@ class YoloDetectionAgent:
         # Frame skip counter for throttling
         self._skip_counter: int = 0
         self._current_throttle: float = 1.0
+        # Last real inference result, replayed on skipped frames
+        self._last_detections: List[Dict] = []
 
         # Register with broker
         self._register_with_broker()
@@ -177,10 +179,16 @@ class YoloDetectionAgent:
         if not self.enabled:
             return self.inference_engine.detect_objects(frame)
 
-        # Apply frame skipping based on throttle
+        # Apply frame skipping based on throttle.
+        #
+        # A skipped frame is NOT the same as "nothing was detected". Returning
+        # an empty list made downstream consumers (analysis cache, WebSocket
+        # payloads, rules engine) believe the scene had emptied, so overlays
+        # flickered and events were missed. Replay the previous result instead
+        # so the pipeline keeps a coherent view between real inferences.
         self._skip_counter += 1
         if self._skip_counter < int(1.0 / max(self._current_throttle, 0.1)):
-            return []  # Skip this frame
+            return list(self._last_detections)
         self._skip_counter = 0
 
         start_time = time.time()
@@ -227,6 +235,9 @@ class YoloDetectionAgent:
         self._detection_counts.append(len(detections))
         if len(self._detection_counts) > 100:
             self._detection_counts.pop(0)
+
+        # Cache for replay on throttled/skipped frames
+        self._last_detections = list(detections)
 
         # Estimate false positive ratio
         if detections:
@@ -308,6 +319,23 @@ class YoloDetectionAgent:
             self._gene_vector.input_resolution_scale = min(
                 1.0, self._gene_vector.input_resolution_scale + 0.1
             )
+        else:
+            # Normal operation — decay back toward the baseline.
+            # Without this branch the throttled case ratcheted the confidence
+            # threshold up (and resolution down) on every single cycle and
+            # never recovered, so the detector went permanently blind once the
+            # system saw any transient load.
+            baseline_conf = self.agent_config.gene_vector_defaults.get(
+                "yolo_conf_threshold", 0.5
+            ) if hasattr(self.agent_config, "gene_vector_defaults") else 0.5
+            if self._gene_vector.yolo_conf_threshold > baseline_conf:
+                self._gene_vector.yolo_conf_threshold = max(
+                    baseline_conf, self._gene_vector.yolo_conf_threshold - 0.05
+                )
+            if self._gene_vector.input_resolution_scale < 1.0:
+                self._gene_vector.input_resolution_scale = min(
+                    1.0, self._gene_vector.input_resolution_scale + 0.1
+                )
 
         self._gene_vector.clamp_to_bounds(self._bounds)
 

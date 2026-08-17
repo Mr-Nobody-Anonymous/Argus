@@ -43,6 +43,11 @@ class DeepTracker:
         self.algorithm = tracker_config.get('algorithm', 'bytetrack')  # deepsort, botsort, bytetrack
         self.track_buffer = tracker_config.get('track_buffer', 30)
         self.match_threshold = tracker_config.get('match_threshold', 0.6)
+        # Fallback association radius for the centre-distance stage, expressed
+        # as a multiple of the detection's own diagonal so it scales with how
+        # near or far the object is. 1.5 tolerates the ~1s inter-frame gap of
+        # CPU inference without merging genuinely distinct neighbours.
+        self.max_center_distance = tracker_config.get('max_center_distance', 1.5)
 
         self._initialized = False
         self.tracks: Dict[int, Dict] = {}
@@ -78,16 +83,28 @@ class DeepTracker:
             [0, 0, 0, 1, 0, 0, 0, 0]
         ], dtype=np.float32)
         
+        # Constant-velocity model. State is [cx, cy, w, h, vx, vy, vw, vh], so
+        # each position term must advance by its OWN velocity:
+        #     cx' = cx + vx      w' = w + vw
+        # The previous matrix coupled position to size (cx' = cx + w + vw),
+        # which made a stationary box "jump" every predict() — IoU then never
+        # exceeded match_threshold and every detection spawned a new track id.
         kf.transitionMatrix = np.array([
-            [1, 0, 1, 0, 0, 0, 1, 0],
-            [0, 1, 0, 1, 0, 0, 0, 1],
-            [0, 0, 1, 0, 1, 0, 1, 0],
-            [0, 0, 0, 1, 0, 1, 0, 1],
-            [0, 0, 0, 0, 1, 0, 1, 0],
-            [0, 0, 0, 0, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0, 1, 0],
+            [0, 0, 0, 1, 0, 0, 0, 1],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
             [0, 0, 0, 0, 0, 0, 1, 0],
             [0, 0, 0, 0, 0, 0, 0, 1]
         ], dtype=np.float32)
+
+        # OpenCV leaves errorCovPost zeroed, which makes the filter behave as if
+        # the initial state were perfectly known and suppresses correction.
+        kf.processNoiseCov = np.eye(8, dtype=np.float32) * 1e-2
+        kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 1e-1
+        kf.errorCovPost = np.eye(8, dtype=np.float32)
         
         # Initialize state
         cx = (bbox[0] + bbox[2]) / 2
@@ -95,8 +112,15 @@ class DeepTracker:
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
         
-        kf.statePre = np.array([cx, cy, w, h, 0, 0, 0, 0], dtype=np.float32)
-        kf.statePost = np.array([cx, cy, w, h, 0, 0, 0, 0], dtype=np.float32)
+        # NOTE: OpenCV expects the state to be a column vector of shape (8, 1).
+        # A flat (8,) array makes predict() fail inside gemm with
+        # "Assertion failed a_size.width == len", which silently kills tracking.
+        kf.statePre = np.array(
+            [[cx], [cy], [w], [h], [0], [0], [0], [0]], dtype=np.float32
+        )
+        kf.statePost = np.array(
+            [[cx], [cy], [w], [h], [0], [0], [0], [0]], dtype=np.float32
+        )
         
         return kf
 
@@ -225,15 +249,90 @@ class DeepTracker:
                 pred_bbox = self._kalman_to_bbox(pred)
                 iou_matrix[i, j] = self._compute_iou(det_bbox, pred_bbox)
 
-        # Greedy matching
-        for i in range(len(detections)):
-            for j in range(len(track_ids)):
-                if iou_matrix[i, j] > self.match_threshold:
-                    matched[i] = track_ids[j]
-                    if i in unmatched_dets:
-                        unmatched_dets.remove(i)
-                    if track_ids[j] in unmatched_tracks:
-                        unmatched_tracks.remove(track_ids[j])
+        # Greedy matching, best-IoU-first.
+        # The pairs are sorted by descending IoU and each detection/track is
+        # consumed at most once. The previous row-major scan let a single track
+        # be assigned to several detections (last write wins) and could claim a
+        # weak pair before a stronger one was considered.
+        pairs = [
+            (iou_matrix[i, j], i, j)
+            for i in range(len(detections))
+            for j in range(len(track_ids))
+            if iou_matrix[i, j] > self.match_threshold
+        ]
+        pairs.sort(reverse=True)
+
+        used_tracks = set()
+        for _iou, i, j in pairs:
+            track_id = track_ids[j]
+            if i in matched or track_id in used_tracks:
+                continue
+            matched[i] = track_id
+            used_tracks.add(track_id)
+            if i in unmatched_dets:
+                unmatched_dets.remove(i)
+            if track_id in unmatched_tracks:
+                unmatched_tracks.remove(track_id)
+
+        # ── Second association stage: centre distance ──
+        #
+        # IoU alone only associates boxes that still physically overlap. That
+        # holds when frames arrive back-to-back, but the pipeline analyses
+        # roughly one frame per second on CPU while cameras run at 15-30 fps,
+        # and in one second a walking person moves clear of their previous box.
+        # IoU is then 0 for every pair, every detection looks new, and identity
+        # churns: measured 89 distinct IDs across 10 processed frames of a
+        # ~12-person scene, versus 15 when frames were consecutive.
+        #
+        # Churned IDs break everything keyed on identity - dwell time never
+        # accumulates (loitering silently stops firing) while entry events
+        # re-fire for the same person on every frame.
+        #
+        # So unmatched pairs get a second chance on centre distance, scaled by
+        # object size (a box twice as large may move twice as far) and gated on
+        # class so a person is never absorbed into a car's track.
+        if unmatched_dets and unmatched_tracks:
+            distance_pairs = []
+            for i in list(unmatched_dets):
+                det = detections[i]
+                dx1, dy1, dx2, dy2 = det['bbox']
+                det_cx, det_cy = (dx1 + dx2) / 2.0, (dy1 + dy2) / 2.0
+                det_diag = max(1.0, ((dx2 - dx1) ** 2 + (dy2 - dy1) ** 2) ** 0.5)
+
+                for track_id in list(unmatched_tracks):
+                    track = self.tracks.get(track_id)
+                    if track is None:
+                        continue
+                    # Never merge across object classes.
+                    if track.get('class_name') != det.get('class_name'):
+                        continue
+
+                    px1, py1, px2, py2 = self._kalman_to_bbox(predicted_tracks[track_id])
+                    pred_cx, pred_cy = (px1 + px2) / 2.0, (py1 + py2) / 2.0
+                    distance = ((det_cx - pred_cx) ** 2 + (det_cy - pred_cy) ** 2) ** 0.5
+
+                    # Reject implausible size changes - a genuine match keeps
+                    # roughly the same scale between observations.
+                    pred_diag = max(1.0, ((px2 - px1) ** 2 + (py2 - py1) ** 2) ** 0.5)
+                    ratio = det_diag / pred_diag
+                    if ratio < 0.5 or ratio > 2.0:
+                        continue
+
+                    normalised = distance / det_diag
+                    if normalised <= self.max_center_distance:
+                        distance_pairs.append((normalised, i, track_id))
+
+            # Closest pairs win, each detection and track used at most once.
+            distance_pairs.sort()
+            for _dist, i, track_id in distance_pairs:
+                if i in matched or track_id in used_tracks:
+                    continue
+                matched[i] = track_id
+                used_tracks.add(track_id)
+                if i in unmatched_dets:
+                    unmatched_dets.remove(i)
+                if track_id in unmatched_tracks:
+                    unmatched_tracks.remove(track_id)
 
         return matched, unmatched_dets, unmatched_tracks
 

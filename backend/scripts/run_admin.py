@@ -1,32 +1,66 @@
 #!/usr/bin/env python
 """
-Script to run Django Admin server alongside FastAPI
-Usage: python run_admin.py
-Then access admin at http://localhost:8001/admin/
+Run the Django admin server alongside the FastAPI backend.
+
+Usage:
+    python backend/scripts/run_admin.py            # serves on :8001
+    python backend/scripts/run_admin.py 0.0.0.0:8002
+
+Then open http://localhost:8001/admin/ and sign in with admin / admin123
+(created automatically on first run).
 """
 import os
 import sys
 from pathlib import Path
 
-# Add Argus to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the project root to sys.path so `backend.*` imports resolve.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-# Set Django settings module
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.django_admin.settings')
 
 import django
+
 django.setup()
 
-from django.core.management import execute_from_command_line
+from django.core.management import execute_from_command_line, call_command
 
-if __name__ == '__main__':
-    # Create admin user if needed
+
+def ensure_schema():
+    """Create the Argus tables (if missing) plus Django's auth/session tables.
+
+    The admin models are `managed = False` and map onto the tables created by
+    backend/database/db.py, so that schema has to exist first.
+    """
+    from backend.database.db import get_db, close_db
+
+    get_db()      # creates cameras / zones / events / behavior_profiles / ...
+    close_db()
+
+    # Creates Django's own tables (auth_user, django_session, ...) in the same
+    # SQLite file. Unmanaged models are skipped.
+    call_command('migrate', '--run-syncdb', verbosity=0)
+
+
+def ensure_admin_user():
     from django.contrib.auth.models import User
+
     if not User.objects.filter(username='admin').exists():
         print("Creating admin user...")
         User.objects.create_superuser('admin', 'admin@argus.local', 'admin123')
         print("Admin user created: admin / admin123")
-    
-    # Run Django development server on port 8001
-    sys.argv = ['manage.py', 'runserver', '8001']
-    execute_from_command_line(sys.argv)
+
+
+def main():
+    ensure_schema()
+    ensure_admin_user()
+
+    addrport = sys.argv[1] if len(sys.argv) > 1 else '8001'
+    print(f"\nStarting Django admin on {addrport} -> http://localhost:8001/admin/\n")
+
+    # --noreload keeps the auto-created superuser logic from running twice.
+    execute_from_command_line(['manage.py', 'runserver', addrport, '--noreload'])
+
+
+if __name__ == '__main__':
+    main()
