@@ -6,6 +6,7 @@ and the standard dict-based detection format from the swarm pipeline.
 """
 import json
 import time
+from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,11 +50,27 @@ class ZoneEvent:
         )
 
 
+def _coerce_bbox(bbox) -> Tuple[int, int, int, int]:
+    """Normalise a bbox to (x1, y1, x2, y2).
+
+    The pipeline passes bboxes as a list/tuple, but the WebSocket and REST
+    layers serialise them as {"x1":..,"y1":..,"x2":..,"y2":..}. Indexing a dict
+    with [0] raised KeyError, so any caller handing back an API-shaped
+    detection crashed zone checking instead of degrading.
+    """
+    if isinstance(bbox, dict):
+        return (int(bbox.get("x1", 0)), int(bbox.get("y1", 0)),
+                int(bbox.get("x2", 0)), int(bbox.get("y2", 0)))
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        return (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+    return (0, 0, 0, 0)
+
+
 def _get_center_from_dict_or_obj(det) -> Tuple[int, int]:
     """Get the bottom-center point from either a dict or an object detection."""
     if isinstance(det, dict):
-        bbox = det.get("bbox", [0, 0, 0, 0])
-        return ((bbox[0] + bbox[2]) // 2, bbox[3])
+        x1, _y1, x2, y2 = _coerce_bbox(det.get("bbox"))
+        return ((x1 + x2) // 2, y2)
     return det.center if hasattr(det, 'center') else (0, 0)
 
 
@@ -67,7 +84,8 @@ def _get_track_id_from_dict_or_obj(det) -> int:
 def _get_class_name_from_dict_or_obj(det) -> str:
     """Get class name from either a dict or an object detection."""
     if isinstance(det, dict):
-        return det.get("class_name", "unknown")
+        # Internally the key is "class_name"; the API/WS payloads use "class".
+        return det.get("class_name") or det.get("class") or "unknown"
     return det.class_name if hasattr(det, 'class_name') else "unknown"
 
 
@@ -81,8 +99,7 @@ def _get_confidence_from_dict_or_obj(det) -> float:
 def _get_bbox_from_dict_or_obj(det) -> Tuple[int, int, int, int]:
     """Get bounding box tuple from either a dict or an object detection."""
     if isinstance(det, dict):
-        b = det.get("bbox", [0, 0, 0, 0])
-        return tuple(b)
+        return _coerce_bbox(det.get("bbox"))
     return det.bbox if hasattr(det, 'bbox') else (0, 0, 0, 0)
 
 
@@ -98,10 +115,33 @@ class ZoneAlerts:
     - Automatic snapshot capture
     """
 
+    # A 24/7 feed keeps minting new track ids, and nothing ever removed the
+    # stale ones: zone_triggers grew without bound for the process lifetime.
+    # Per-track state is only useful while the track is live, so cap it and
+    # evict the least recently touched entries.
+    MAX_TRACKED_IDS = 4096
+
     def __init__(self):
         self.zones: Dict[int, dict] = {}
-        self.zone_triggers: Dict[int, dict] = {}  # track_id -> last position
-        self.loitering_triggers: Dict[int, dict] = {}  # track_id -> entry time
+        # OrderedDict so eviction is O(1) least-recently-used.
+        self.zone_triggers: "OrderedDict[int, dict]" = OrderedDict()  # track_id -> last position
+        self.loitering_triggers: Dict[int, float] = {}  # track_id -> entry time
+
+    def _touch_track(self, track_id: int) -> dict:
+        """Return this track's state, refreshing its recency and evicting stale
+        entries once the cap is exceeded."""
+        state = self.zone_triggers.get(track_id)
+        if state is None:
+            state = {}
+            self.zone_triggers[track_id] = state
+        else:
+            self.zone_triggers.move_to_end(track_id)
+
+        while len(self.zone_triggers) > self.MAX_TRACKED_IDS:
+            stale_id, _ = self.zone_triggers.popitem(last=False)
+            # Keep the companion dict in step, otherwise it leaks instead.
+            self.loitering_triggers.pop(stale_id, None)
+        return state
 
     def load_zones(self, camera_id: int, zones: List[dict]):
         """Load zone definitions from database"""
@@ -193,9 +233,7 @@ class ZoneAlerts:
             ))
 
         # Update trigger state
-        if track_id not in self.zone_triggers:
-            self.zone_triggers[track_id] = {}
-        self.zone_triggers[track_id]['last_center'] = center
+        self._touch_track(track_id)['last_center'] = center
 
         return events
 
@@ -223,9 +261,7 @@ class ZoneAlerts:
                 timestamp=time.time()
             ))
         
-        if track_id not in self.zone_triggers:
-            self.zone_triggers[track_id] = {}
-        self.zone_triggers[track_id]['inside_polygon'] = is_inside
+        self._touch_track(track_id)['inside_polygon'] = is_inside
 
         return events
 

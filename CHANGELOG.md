@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Six regression tests covering zone-alert payload shapes and per-track memory
+  bounds (mutation-verified: each fails when its bug is reintroduced).
 - **Continuous integration** (`.github/workflows/ci.yml`). Nothing ran the test
   suite before. Four jobs: lint/static checks, secret and gitignore hygiene,
   the full suite on Python 3.11 and 3.13 plus a real server boot, and a
@@ -37,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Not a directory".
 
 ### Fixed
+- **Zone checking crashed on API-shaped detections.** `_get_center_from_dict_or_obj`
+  indexed `bbox` as a list, but every serialised detection (WebSocket, REST) uses
+  `{"x1":..,"y1":..,"x2":..,"y2":..}`, so feeding one back raised `KeyError: 0`
+  and aborted the zone check rather than degrading. Bboxes are now coerced from
+  either shape, and the class is read from `class_name` *or* `class`.
+- **Unbounded memory growth in `ZoneAlerts`.** `zone_triggers` was keyed by
+  `track_id` and never pruned, so a 24/7 feed leaked an entry per track for the
+  process lifetime (50,000 tracks measured as 50,000 retained entries). Now an
+  LRU-bounded 4096 entries, with `loitering_triggers` pruned in step.
+- Bare `except:` in the frame-drop path of `stream_ingestion.py` also swallowed
+  `KeyboardInterrupt`/`SystemExit`, interfering with clean shutdown. Narrowed to
+  `(queue.Empty, queue.Full)`.
+- Removed three byte-identical 355 KB copies of the logo PNG (none referenced by
+  any code) and wired the existing 1.3 KB SVG up as the previously-missing
+  favicon.
 - **The Docker healthcheck could never pass.** It ran
   `python -c "import requests; ..."` while `requests` was not a declared
   dependency, so the backend container was reported `unhealthy` even when the

@@ -532,3 +532,83 @@ class TestEventDeduplication:
             "Event never re-armed after the subject left - real re-entries "
             "would be silently dropped."
         )
+
+
+class TestZoneAlertsPayloadShapes:
+    """Zone checking used to assume `bbox` was always a list.
+
+    The pipeline passes a list, but every serialised detection (WebSocket, REST)
+    carries {"x1":..,"y1":..} and the class under "class" rather than
+    "class_name". Feeding one of those back in raised KeyError: 0 and killed the
+    zone check instead of degrading, and nothing covered the path.
+    """
+
+    @staticmethod
+    def _manager():
+        from backend.services.management.zone_alerts import ZoneAlerts
+        za = ZoneAlerts()
+        za.load_zones(1, [{
+            "id": 1, "name": "vault", "type": "intrusion",
+            "coordinates": "[[0,0],[100,0],[100,100],[0,100]]",
+        }])
+        return za
+
+    def test_dict_shaped_bbox_does_not_raise(self):
+        za = self._manager()
+        det = [{"track_id": 8, "class": "person", "confidence": 0.9,
+                "bbox": {"x1": 40, "y1": 40, "x2": 60, "y2": 60}}]
+        za.check_zone_crossings(1, det)  # KeyError: 0 before the fix
+        assert 8 in za.loitering_triggers, (
+            "API-shaped bbox was not understood: the subject was not registered "
+            "inside the zone."
+        )
+
+    def test_list_shaped_bbox_still_works(self):
+        za = self._manager()
+        det = [{"track_id": 7, "class_name": "person", "confidence": 0.9,
+                "bbox": [40, 40, 60, 60]}]
+        za.check_zone_crossings(1, det)
+        assert 7 in za.loitering_triggers
+
+    def test_malformed_bbox_degrades_instead_of_crashing(self):
+        za = self._manager()
+        for bad in (None, [1, 2], {}, "nonsense"):
+            za.check_zone_crossings(
+                1, [{"track_id": 1, "class_name": "person",
+                     "confidence": 0.5, "bbox": bad}])
+
+    def test_intrusion_actually_fires_after_dwell(self):
+        za = self._manager()
+        det = [{"track_id": 7, "class": "person", "confidence": 0.9,
+                "bbox": {"x1": 40, "y1": 40, "x2": 60, "y2": 60}}]
+        assert za.check_zone_crossings(1, det) == [], "fired before any dwell"
+        za.loitering_triggers[7] = time.time() - 31
+        events = za.check_zone_crossings(1, det)
+        assert len(events) == 1, "loitering threshold never triggered an event"
+        assert events[0].object_type == "person", (
+            "class was read from the wrong key - events would be mislabelled"
+        )
+
+    def test_per_track_state_is_bounded(self):
+        """A 24/7 feed mints new track ids forever; nothing evicted them."""
+        za = self._manager()
+        cap = za.MAX_TRACKED_IDS
+        for tid in range(cap * 3):
+            za._touch_track(tid)["last_center"] = (tid, tid)
+            za.loitering_triggers[tid] = 1.0
+        assert len(za.zone_triggers) <= cap, (
+            f"zone_triggers grew to {len(za.zone_triggers)} - unbounded leak"
+        )
+        assert len(za.loitering_triggers) <= cap, (
+            "loitering_triggers leaked while zone_triggers was capped"
+        )
+
+    def test_recently_seen_track_survives_eviction(self):
+        za = self._manager()
+        cap = za.MAX_TRACKED_IDS
+        for tid in range(cap):
+            za._touch_track(tid)["v"] = tid
+        za._touch_track(0)["v"] = "refreshed"   # oldest, but seen again
+        za._touch_track(10 ** 6)["v"] = "new"   # forces one eviction
+        assert 0 in za.zone_triggers, "LRU refresh failed; an active track was dropped"
+        assert 1 not in za.zone_triggers, "evicted the wrong entry"

@@ -569,7 +569,7 @@ log line, with any `extra={...}` fields merged in — so logs can be filtered by
 pytest        # collects exactly these two suites (see pytest.ini)
 ```
 
-**44 tests, all passing** in ~14 s.
+**50 tests, all passing** in ~14 s.
 
 Every push and pull request runs these on Python 3.11 and 3.13 via
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
@@ -580,7 +580,7 @@ scan, a gitignore-hygiene check, and a frontend build. See
 
 | Suite | Tests | Guards against |
 |---|---|---|
-| `tests/test_regression.py` | 23 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms |
+| `tests/test_regression.py` | 29 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state |
 | `tests/test_api_security.py` | 21 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, plaintext secrets in config |
 
 These are **mutation-verified** — deliberately reintroducing a bug (e.g. the

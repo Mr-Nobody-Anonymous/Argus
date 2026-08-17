@@ -160,7 +160,10 @@ class StreamIngestion:
                         self.frame_queues[camera_id].get_nowait()
                         self.frame_queues[camera_id].put_nowait((frame, datetime.now()))
                         logger.debug(f"Camera {camera_id}: Dropped frame (queue full)")
-                    except:
+                    except (queue.Empty, queue.Full):
+                        # Another consumer raced us for the slot; skip this
+                        # frame. A bare `except` here also swallowed
+                        # KeyboardInterrupt/SystemExit, blocking clean shutdown.
                         pass
 
                 # Pace file playback to the clip's native frame rate so a demo
