@@ -58,6 +58,14 @@ def seeded_users():
             cur.execute("INSERT OR IGNORE INTO auth_group (name) VALUES (?)", (group,))
 
         for username, (group, password) in TEST_USERS.items():
+            # Delete the group membership BEFORE the user. SQLite runs with
+            # foreign_keys=OFF by default, so deleting only auth_user leaves the
+            # auth_user_groups row behind pointing at a dead id - a stale role
+            # grant that would apply to whoever inherits that id.
+            cur.execute(
+                "DELETE FROM auth_user_groups WHERE user_id IN "
+                "(SELECT id FROM auth_user WHERE username = ?)", (username,)
+            )
             cur.execute("DELETE FROM auth_user WHERE username = ?", (username,))
             cur.execute(
                 """INSERT INTO auth_user
@@ -80,6 +88,10 @@ def seeded_users():
     conn = sqlite3.connect(str(DB_PATH))
     try:
         for username in TEST_USERS:
+            conn.execute(
+                "DELETE FROM auth_user_groups WHERE user_id IN "
+                "(SELECT id FROM auth_user WHERE username = ?)", (username,)
+            )
             conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
         conn.commit()
     finally:
@@ -365,3 +377,44 @@ class TestSecretHandling:
         gitignore = PROJECT_ROOT / ".gitignore"
         assert gitignore.exists()
         assert ".env" in gitignore.read_text(), ".env must never be committed"
+
+
+class TestRoleGrantIntegrity:
+    """Stale role grants are a privilege-escalation hazard.
+
+    SQLite runs with foreign_keys=OFF unless a connection opts in, so deleting a
+    row from auth_user leaves its auth_user_groups row behind, still naming a
+    group. If that user id is ever reused, the new account silently inherits the
+    dead account's role. The test fixture itself was leaking three such rows per
+    run and had accumulated 33, eleven of them granting `admin`.
+    """
+
+    def test_no_orphaned_group_memberships(self):
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            orphans = conn.execute(
+                """SELECT ug.user_id, COALESCE(g.name, '<missing group>')
+                     FROM auth_user_groups ug
+                     LEFT JOIN auth_group g ON g.id = ug.group_id
+                    WHERE ug.user_id NOT IN (SELECT id FROM auth_user)
+                       OR ug.group_id NOT IN (SELECT id FROM auth_group)"""
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert not orphans, (
+            f"{len(orphans)} role grant(s) reference a user or group that no "
+            f"longer exists: {orphans[:10]}. Whoever inherits one of these ids "
+            f"would silently gain that role."
+        )
+
+    def test_no_duplicate_group_memberships(self):
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            dupes = conn.execute(
+                """SELECT user_id, group_id, COUNT(*) c FROM auth_user_groups
+                    GROUP BY user_id, group_id HAVING c > 1"""
+            ).fetchall()
+        finally:
+            conn.close()
+        assert not dupes, f"Duplicate role grants: {dupes}"

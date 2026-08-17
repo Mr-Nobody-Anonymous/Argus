@@ -173,6 +173,12 @@ def _db_path() -> str:
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
+    # SQLite defaults foreign_keys to OFF per connection. Without this, deleting
+    # a user leaves its auth_user_groups row behind as a dangling role grant.
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+    except sqlite3.Error:  # pragma: no cover - older/locked SQLite builds
+        logger.debug("Could not enable foreign_keys pragma")
     return conn
 
 
@@ -186,7 +192,11 @@ def _derive_role(conn: sqlite3.Connection, user_row: sqlite3.Row) -> str:
             """
             SELECT g.name FROM auth_group g
             JOIN auth_user_groups ug ON ug.group_id = g.id
-            WHERE ug.user_id = ?
+            -- Re-join auth_user so a grant whose user no longer exists can
+            -- never be honoured, even if the row was orphaned while foreign
+            -- keys were disabled (they are OFF by default in SQLite).
+            JOIN auth_user u ON u.id = ug.user_id
+            WHERE ug.user_id = ? AND u.is_active = 1
             """,
             (user_row["id"],),
         ).fetchall()

@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still pass, and a live server serves authenticated traffic including the
   multipart upload path.
 
+### Security
+- **33 orphaned role grants, eleven of them `admin`, were sitting in
+  `auth_user_groups`.** SQLite enables foreign keys per connection and defaults
+  to OFF, so deleting a user left its group membership behind pointing at a dead
+  id. Demonstrated the consequence: a freshly created non-superuser that reuses
+  such an id resolves to `admin`. `AUTOINCREMENT` makes reuse unlikely today,
+  which is why this had gone unnoticed - not a reason to leave it.
+  - The security-test fixture was the source, leaking three rows per run: it
+    deleted `auth_user` but never `auth_user_groups`. Fixed in both setup and
+    teardown, and verified flat across three consecutive runs.
+  - `backend/api/auth.py` now enables `PRAGMA foreign_keys = ON`, which makes
+    SQLite reject orphan inserts outright (verified), and role lookup re-joins
+    `auth_user` with `is_active = 1`.
+  - Existing orphans purged; `PRAGMA foreign_key_check` reports 0 violations.
+  - Two new tests fail if any orphaned or duplicate grant reappears.
+
 ### Fixed
 - **README and FOLDER_STRUCTURE claimed a "DEAP-based genetic algorithm".**
   `evolutionary_engine.py` never imported DEAP - it implements its own GA with
