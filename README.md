@@ -141,7 +141,27 @@ operator out mid-shift.
 | WebSocket Stream | `ws://localhost:8000/api/ws/stream/{camera_id}?token=<jwt>` |
 | Django Admin     | http://localhost:8001/admin  |
 
-### 5. Try it without a camera
+### 5. What a fresh clone does *not* include
+
+`data/` and the model weights are gitignored, so after cloning you will need:
+
+| Missing | How to get it |
+|---|---|
+| `backend/models/yolov8n.pt` | Downloaded automatically on first run by ultralytics, or fetch it manually |
+| `data/argus.db` | Created automatically at startup; add users via Django admin (step 2) |
+| `data/demo_clip.mp4` | **Included** — it is the one exception, because the test suite needs it |
+
+Regenerate the demo clip if you ever need to:
+
+```bash
+python backend/scripts/make_demo_clip.py --source path/to/street_photo.jpg
+```
+
+It reports how many objects YOLO finds in the first frame. Use a real
+photograph — the detector returns nothing on drawn shapes, so a synthetic clip
+looks identical to a broken pipeline.
+
+### 6. Try it without a camera
 
 No RTSP stream handy? Point a camera row at a local video file — the ingestion
 layer detects file sources, paces them to their native FPS, and loops on EOF:
