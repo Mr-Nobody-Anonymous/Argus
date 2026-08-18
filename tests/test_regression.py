@@ -956,6 +956,18 @@ class TestSinglePortDashboard:
         from backend.api.main import app
         return TestClient(app), (dist / "index.html") if created else None
 
+    @staticmethod
+    def _purge_main():
+        """Drop the UI-mounted app so later tests re-import the real one.
+
+        Reloading main.py with a built UI present swaps `GET /` for a static
+        mount. Leaving that module in sys.modules leaks a different route
+        table into every subsequent test - which is why the README route
+        count passed alone and failed in a full run.
+        """
+        for mod in [m for m in list(sys.modules) if m.startswith("backend.api.main")]:
+            del sys.modules[mod]
+
     def test_unknown_api_path_stays_json_404(self):
         """The SPA fallback must never swallow an unknown /api route.
 
@@ -978,6 +990,7 @@ class TestSinglePortDashboard:
         finally:
             if tmp_index is not None:
                 tmp_index.unlink(missing_ok=True)
+            self._purge_main()
 
     def test_spa_fallback_handles_raised_404(self):
         """Starlette raises HTTPException(404); returning-only checks miss it."""
@@ -3418,4 +3431,359 @@ class TestDocumentedPathsExist:
         assert not missing, (
             "documentation references paths that do not exist: "
             + "; ".join(f"{k}: {sorted(v)}" for k, v in sorted(missing.items()))
+        )
+
+
+class TestAlertDelivery:
+    """Events must actually be *sent*, not just recorded.
+
+    The original defect: MQTTPublisher.publish_event() was fully implemented
+    and mqtt.enabled was true in config, but grep showed no caller anywhere in
+    the codebase. Every event Argus ever produced was delivered nowhere, and
+    nothing reported that. These tests pin the delivery path and, just as
+    importantly, the honesty of its reporting.
+    """
+
+    @staticmethod
+    def _event(**kw):
+        from datetime import datetime
+        base = dict(id=1, camera_id=2, rule_type="dwell", priority="high",
+                    confidence=0.8, timestamp=datetime.now(),
+                    metadata={"evidence": ["duration 45s"]})
+        base.update(kw)
+        return base
+
+    def test_webhook_actually_delivers_over_http(self):
+        """A real HTTP server must receive a real request with the payload."""
+        import json as _json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from backend.services.management.notifications import (
+            AlertPolicy, NotificationService, WebhookTransport,
+        )
+
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                received.append(_json.loads(self.rfile.read(length)))
+                self.send_response(202)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            service = NotificationService(
+                transports=[WebhookTransport(url=f"http://127.0.0.1:{port}/h")],
+                policy=AlertPolicy(min_priority="low"),
+                synchronous=True,
+            )
+            results = service.notify(self._event())
+            assert results and results[0].delivered, (
+                f"webhook did not deliver: {[r.to_dict() for r in results or []]}"
+            )
+            assert len(received) == 1, "server received no request"
+            assert received[0]["rule_type"] == "dwell"
+            # Evidence is the reason an operator trusts the alert; it must survive.
+            assert received[0]["metadata"]["evidence"] == ["duration 45s"]
+            # datetimes must be JSON-safe or delivery silently fails in prod.
+            assert isinstance(received[0]["timestamp"], str)
+        finally:
+            server.shutdown()
+
+    def test_failed_delivery_is_reported_not_swallowed(self):
+        """An unreachable endpoint must report delivered=False with a reason."""
+        from backend.services.management.notifications import WebhookTransport
+
+        # Port 9 (discard) refuses connections.
+        result = WebhookTransport(url="http://127.0.0.1:9/x", timeout_s=1.0).send(
+            self._event()
+        )
+        assert result.delivered is False
+        assert result.reason, "a failure with no reason is undiagnosable"
+
+    def test_unavailable_channel_is_not_reported_as_sent(self):
+        """Availability is probed live, never assumed from the config flag.
+
+        mqtt.enabled: true with no broker running must NOT count as delivered.
+        A stub publisher is used rather than the ambient broker state, because
+        skipping when the channel looks available makes the test unable to
+        fail - which is how a mutation deleting the liveness probe survived.
+        """
+        from backend.services.management.notifications import MqttTransport
+
+        class DisconnectedPublisher:
+            """Config says enabled; the socket says otherwise."""
+
+            class config:
+                class mqtt:
+                    enabled = True
+                    broker = "localhost"
+                    port = 1883
+
+            def is_connected(self):
+                return False
+
+            def publish_event(self, event):
+                raise AssertionError(
+                    "published to a broker that is not connected"
+                )
+
+        transport = MqttTransport(publisher=DisconnectedPublisher())
+        available, reason = transport.available()
+        assert available is False, (
+            "mqtt.enabled=true was treated as proof of a live broker"
+        )
+        assert reason, "unavailability must explain itself"
+        result = transport.send(self._event())
+        assert result.delivered is False, (
+            "reported an alert as sent with no broker connected"
+        )
+
+    def test_priority_floor_filters(self):
+        from backend.services.management.notifications import AlertPolicy
+
+        policy = AlertPolicy(min_priority="high")
+        assert policy.evaluate(self._event(priority="low"))[0] is False
+        assert policy.evaluate(self._event(priority="high"))[0] is True
+        assert policy.evaluate(self._event(priority="critical"))[0] is True
+
+    def test_deny_list_beats_allow_list(self):
+        from backend.services.management.notifications import AlertPolicy
+
+        policy = AlertPolicy(min_priority="low", rules_allow=["dwell"],
+                             rules_deny=["dwell"])
+        assert policy.evaluate(self._event(rule_type="dwell"))[0] is False
+
+    def test_quiet_hours_wrap_midnight(self):
+        """22:00-06:00 must suppress at 03:00 and allow at noon."""
+        from datetime import datetime
+        from backend.services.management.notifications import AlertPolicy
+
+        policy = AlertPolicy(min_priority="low", quiet_hours={"dwell": [22, 6]})
+        assert policy.evaluate(
+            self._event(), now=datetime(2026, 1, 1, 3, 0))[0] is False
+        assert policy.evaluate(
+            self._event(), now=datetime(2026, 1, 1, 23, 0))[0] is False
+        assert policy.evaluate(
+            self._event(), now=datetime(2026, 1, 1, 12, 0))[0] is True
+
+    def test_rate_limit_caps_a_flapping_camera(self):
+        """One noisy camera must not exhaust a pager."""
+        from backend.services.management.notifications import (
+            AlertPolicy, NotificationService,
+        )
+
+        service = NotificationService(
+            transports=[],
+            policy=AlertPolicy(min_priority="low", rate_limit_per_minute=3),
+            synchronous=True,
+        )
+        for i in range(10):
+            service.notify(self._event(id=i))
+        assert service.counters["suppressed_rate_limit"] == 7, service.counters
+
+    def test_dropped_alerts_are_counted(self):
+        """Suppression must be visible in status(), never silent."""
+        from backend.services.management.notifications import (
+            AlertPolicy, NotificationService,
+        )
+
+        service = NotificationService(
+            transports=[], policy=AlertPolicy(min_priority="critical"),
+            synchronous=True,
+        )
+        service.notify(self._event(priority="low"))
+        status = service.status()
+        assert status["counters"]["suppressed_by_policy"] == 1
+        assert "channels" in status
+
+    def test_event_creation_survives_a_broken_transport(self):
+        """Recording the event is the guarantee; delivery is best-effort."""
+        from backend.services.management.notifications import (
+            AlertPolicy, NotificationService, Transport,
+        )
+
+        class Exploding(Transport):
+            name = "exploding"
+
+            def available(self):
+                return True, "ok"
+
+            def send(self, event):
+                raise RuntimeError("transport is on fire")
+
+        service = NotificationService(
+            transports=[Exploding()], policy=AlertPolicy(min_priority="low"),
+            synchronous=True,
+        )
+        results = service.notify(self._event())
+        assert results and results[0].delivered is False
+        assert "fire" in results[0].reason
+
+    def test_create_event_actually_dispatches(self):
+        """Creating a real event must reach the notification service.
+
+        Asserting on source text is not enough here: the `import` line alone
+        contains the function name, so a scan still passes after the call
+        itself is deleted. Mutation testing caught exactly that, so this
+        drives a real event through the real code path instead.
+        """
+        from backend.services.management import notifications
+        from backend.services.management.event_store import get_event_store
+
+        seen = []
+
+        class Recorder:
+            def notify(self, event):
+                seen.append(event)
+                return []
+
+        original = notifications.get_notification_service
+        notifications.get_notification_service = lambda: Recorder()
+        try:
+            camera_id = TestEventLifecycle._camera_id()
+            event = get_event_store().create_event(
+                camera_id=camera_id, rule_type="dwell", priority="high",
+                confidence=0.9, metadata={"evidence": ["dispatch probe"]},
+            )
+        finally:
+            notifications.get_notification_service = original
+
+        assert event, "event was not created"
+        assert seen, (
+            "create_event recorded the event but never dispatched it - the "
+            "original defect: every event delivered nowhere"
+        )
+        assert seen[0]["rule_type"] == "dwell"
+
+
+class TestEvidenceClips:
+    """Pre-event footage must exist, be bounded, and never be faked."""
+
+    @staticmethod
+    def _frames(n=30, seed=0):
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        return [rng.integers(0, 255, (120, 160, 3), dtype=np.uint8)
+                for _ in range(n)]
+
+    def test_clip_is_a_real_playable_file(self):
+        import tempfile
+        from pathlib import Path
+        from backend.services.management.evidence_clips import EvidenceClipService
+
+        out = Path(tempfile.mkdtemp())
+        service = EvidenceClipService(seconds=5, fps=10, output_dir=out)
+        for i, frame in enumerate(self._frames()):
+            service.record(1, frame, timestamp=1000.0 + i * 0.1)
+
+        result = service.write_clip(1, "intrusion", event_id=7)
+        if not result.written and "encoder" in result.reason:
+            pytest.skip(f"no mp4 encoder in this OpenCV build: {result.reason}")
+        assert result.written, result.reason
+        path = Path(result.path)
+        assert path.exists() and path.stat().st_size > 0
+        # A path to an unreadable file is worse than no clip.
+        import cv2
+        capture = cv2.VideoCapture(str(path))
+        try:
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) > 1
+        finally:
+            capture.release()
+
+    def test_buffer_is_bounded_in_bytes_not_just_frames(self):
+        """Frame size varies ~40x with content, so a frame cap is not a memory cap."""
+        from backend.services.management.evidence_clips import FrameRingBuffer
+
+        # Generous frame cap, tiny byte cap: bytes must bind.
+        buffer = FrameRingBuffer(seconds=100, fps=10, quality=90, max_mb=1.0)
+        for i, frame in enumerate(self._frames(400, seed=3)):
+            buffer.append(frame, timestamp=1000.0 + i * 0.1)
+        stats = buffer.stats()
+        assert stats["mb"] <= stats["max_mb"], stats
+        assert stats["frames"] < 1000, "frame cap alone was doing the bounding"
+
+    def test_unclipped_rule_is_declined_with_a_reason(self):
+        import tempfile
+        from pathlib import Path
+        from backend.services.management.evidence_clips import EvidenceClipService
+
+        service = EvidenceClipService(output_dir=Path(tempfile.mkdtemp()))
+        result = service.write_clip(1, "scene_change")
+        assert result.written is False
+        assert result.path is None, "declined clip must not return a path"
+        assert "clip_rules" in result.reason
+
+    def test_empty_buffer_never_returns_a_path(self):
+        import tempfile
+        from pathlib import Path
+        from backend.services.management.evidence_clips import EvidenceClipService
+
+        service = EvidenceClipService(output_dir=Path(tempfile.mkdtemp()))
+        result = service.write_clip(99, "intrusion")
+        assert result.written is False and result.path is None
+
+    def test_clips_have_retention(self):
+        """New files on disk with no expiry is a disk-exhaustion bug."""
+        import os
+        import tempfile
+        import time as _time
+        from pathlib import Path
+        from unittest import mock
+        import backend.services.management.retention as retention
+
+        root = Path(tempfile.mkdtemp())
+        clips = root / "clips"
+        clips.mkdir()
+        snapshots = root / "snapshots"
+        snapshots.mkdir()
+        for i in range(10):
+            path = clips / f"c{i}.mp4"
+            path.write_bytes(b"x" * (1024 * 1024))
+            if i < 5:
+                old = _time.time() - 20 * 86400
+                os.utime(path, (old, old))
+
+        with mock.patch.object(retention, "resolve_path", lambda _: snapshots):
+            assert retention.purge_clips(14) == 5
+            # Time expiry alone cannot bound disk: enforce the ceiling too.
+            assert retention.enforce_clip_size_cap(3) == 2
+        survivors = sorted(p.name for p in clips.glob("*.mp4"))
+        assert survivors == ["c7.mp4", "c8.mp4", "c9.mp4"], survivors
+
+    def test_clip_retention_runs_in_the_scheduled_pass(self):
+        """A purge function nobody calls does not bound anything.
+
+        purge_clips() being correct is irrelevant if run_retention_once()
+        never invokes it - which mutation testing showed this suite missed.
+        """
+        import inspect
+        import backend.services.management.retention as retention
+
+        source = inspect.getsource(retention.run_retention_once)
+        assert "purge_clips(" in source and "enforce_clip_size_cap(" in source, (
+            "clips are written but never expired by the retention pass"
+        )
+        results = retention.run_retention_once()
+        assert "clips" in results and "clips_over_cap" in results, (
+            f"retention pass does not report clips: {sorted(results)}"
+        )
+
+    def test_coordinator_records_frames(self):
+        """A buffer nothing writes to is the dormant-code defect again."""
+        import inspect
+        from backend.services.core_engine import processing_coordinator
+
+        source = inspect.getsource(processing_coordinator)
+        # Both the swarm and legacy frame paths must buffer. Checking mere
+        # presence let a mutation delete one path and still pass.
+        assert source.count("self.evidence.record(") >= 2, (
+            "a frame path does not fill the ring buffer, so events on that "
+            "path can never have a clip"
         )

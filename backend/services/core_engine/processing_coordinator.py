@@ -72,6 +72,11 @@ class ProcessingCoordinator:
         )
         self.adaptive_learning = get_adaptive_learning_engine()
 
+        # Pre-event footage. Frames go in on every processed frame so a clip is
+        # already available the moment a rule fires - after the fact is too late.
+        from backend.services.management.evidence_clips import get_evidence_service
+        self.evidence = get_evidence_service()
+
         # Pose is computed after the rules engine runs, so fall detection uses
         # the previous frame's keypoints. Bounded per camera, not per track.
         self._last_pose_results: Dict[int, list] = {}
@@ -292,6 +297,12 @@ class ProcessingCoordinator:
             if lpr_alloc:
                 self.lpr_agent.apply_allocation(lpr_alloc)
 
+        # Buffer this frame for pre-event evidence before any rule can fire.
+        try:
+            self.evidence.record(camera_id, enhanced_frame, frame_time)
+        except Exception as exc:  # noqa: BLE001 - never break the frame
+            logger.debug(f"Evidence buffer failed: {exc}")
+
         # ── Step 3: Process detections through rules engine ──
         # Pose is computed later in the frame (Step 6), so fall detection is fed
         # the *previous* frame's keypoints. A fall persists for many frames, so
@@ -439,6 +450,11 @@ class ProcessingCoordinator:
             detections = self.logic_mutator.apply_filter(detections)
         except Exception as e:
             logger.warning(f"Logic mutator filter error (sandboxed fallback): {e}")
+
+        try:
+            self.evidence.record(camera_id, enhanced_frame, frame_time)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Evidence buffer failed: {exc}")
 
         # Step 3: Rules engine (see note in the swarm path re: pose latency)
         if detections:

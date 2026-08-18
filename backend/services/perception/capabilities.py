@@ -137,7 +137,26 @@ class CapabilityRegistry:
                     importlib.import_module(cap.module)
                 except Exception as exc:  # noqa: BLE001 - any failure means unusable
                     cap.available = False
-                    cap.unavailable_reason = f"{type(exc).__name__}: {exc}"[:160]
+                    detail = f"{type(exc).__name__}: {exc}"
+                    # A missing module is a fact, but rarely the whole story.
+                    # If the capability ships a verifier, let it explain - it
+                    # knows about fallbacks and about the neighbouring
+                    # capability that still works. Discarding that here left
+                    # operators with a bare ModuleNotFoundError and no idea
+                    # which half of the feature still functions.
+                    if cap.verify is not None:
+                        try:
+                            result = cap.verify()
+                            reason = (
+                                str(result[1])
+                                if isinstance(result, tuple) and len(result) > 1
+                                else ""
+                            )
+                            if reason:
+                                detail = reason
+                        except Exception:  # noqa: BLE001
+                            pass
+                    cap.unavailable_reason = detail[:200]
                     continue
 
                 if cap.verify is None:

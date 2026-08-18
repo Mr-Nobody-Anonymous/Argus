@@ -485,11 +485,11 @@ Field notes: the class label key is **`class`** (not `class_name`), `bbox` is an
 
 ## 📊 API Reference
 
-**68 addressable operations**: 64 registered routes (58 under `/api/v1`, plus
+**73 addressable operations**: 69 registered routes (62 under `/api/v1`, plus
 `GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
 `/metrics`), 3 streaming routes and 1 WebSocket route.
 
-Of the 58 `/api/v1` operations, **55 require a token and 3 are public**.
+Of the 62 `/api/v1` operations, **59 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 
@@ -608,6 +608,48 @@ being detected without it.
 | `GET` | `/api/v1/observations/promotion` | viewer | How many perception observations became events, and which kinds are deliberately not promoted |
 | `GET` | `/api/v1/events/lifecycle` | viewer | The permitted event state machine, so clients need not hardcode it |
 | `PATCH` | `/api/v1/events/{event_id}/status` | operator | Advance an event; records the acting user. Illegal transitions return `400` |
+| `GET` | `/api/v1/notifications/status` | viewer | Which alert channels can **actually deliver right now**, plus policy and suppression counters |
+| `POST` | `/api/v1/notifications/test` | admin | Send a synthetic alert through every channel and report the real per-transport outcome |
+| `GET` | `/api/v1/evidence/status` | viewer | Pre-event ring-buffer occupancy per camera and clip counters |
+| `GET` | `/api/v1/events/{event_id}/clip` | viewer | Download the pre-event video clip; `404` with a reason if none, `410` once retention has removed it |
+
+### Alerts are delivered, not just recorded
+
+`MQTTPublisher.publish_event()` was fully written and `mqtt.enabled` was `true`
+in `config.yaml`, but **nothing in the codebase ever called it**. Every event
+Argus produced was stored in SQLite and sent nowhere, and no endpoint revealed
+that. `EventStore.create_event` — the one choke point every event passes
+through — now dispatches through a notification service with MQTT and webhook
+transports, an alert policy (priority floor, allow/deny, midnight-wrapping
+quiet hours, per-camera rate limit) and counters for everything it drops.
+
+Channel availability is **probed live**, never inferred from the config flag:
+with `mqtt.enabled: true` and no broker running, `notifications/status`
+reports the channel as unavailable and gives the reason. A delivery that was
+never attempted is never reported as sent, and a suppressed alert is counted
+rather than swallowed. Delivery is best-effort and cannot break event
+recording — a transport that raises is logged and reported, and the event is
+still persisted.
+
+### Pre-event video evidence
+
+A snapshot shows the instant a rule fired, not the approach. Argus keeps a
+per-camera ring buffer of recent frames and exports an mp4 when a high-value
+rule fires (`evidence_clips.clip_rules`); the path is attached to the event
+metadata and served from `/api/v1/events/{event_id}/clip`.
+
+Frames are buffered **JPEG-encoded rather than raw**, measured on 480p:
+
+| | per frame | 10 s @ 10 fps, one camera |
+|---|---|---|
+| raw BGR | 0.88 MB | **88 MB** |
+| JPEG q=80 | 0.005–0.20 MB | 0.5–20 MB |
+
+Raw buffering costs ~352 MB across four cameras — fatal beside the detection
+model. Encoding costs ~2 ms/frame against a ~108 ms/frame YOLO budget. The
+buffer is bounded **in bytes as well as frames**, because frame size varies
+~40× with scene content, so a frame count alone is not a memory guarantee.
+Clips expire under `retention.clips_days` with a `clips_max_mb` ceiling.
 
 A rule declared `enabled: true` in `config.yaml` used to mean nothing on its
 own — `speed_violation`, `fall_detection` and `abandoned_object` were all

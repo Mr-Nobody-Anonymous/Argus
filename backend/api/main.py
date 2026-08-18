@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+import json
 from pathlib import Path
 from fastapi import (
     FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request,
@@ -1452,6 +1453,123 @@ async def memory_stats():
         return get_memory().report()
     except Exception as e:
         logger.error(f"Memory stats failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/evidence/status", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_evidence_status():
+    """Pre-event buffer occupancy and clip counters, per camera."""
+    try:
+        from backend.services.management.evidence_clips import get_evidence_service
+
+        return get_evidence_service().status()
+    except Exception as e:
+        logger.error(f"Evidence status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/events/{event_id}/clip",
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_event_clip(event_id: int):
+    """Download the pre-event clip for an event, if one was written."""
+    try:
+        event = get_event_store().get_event(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        meta = event.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (ValueError, TypeError):
+                meta = {}
+        clip = meta.get("clip") or {}
+        if not clip.get("written") or not clip.get("path"):
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No clip for this event: "
+                    + (clip.get("reason") or "clips not enabled for this rule")
+                ),
+            )
+        path = Path(clip["path"])
+        if not path.exists():
+            raise HTTPException(
+                status_code=410,
+                detail="Clip has been removed by the retention policy",
+            )
+        return FileResponse(str(path), media_type="video/mp4", filename=path.name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Clip fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/notifications/status", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_notification_status():
+    """Which alert channels can actually deliver, and what policy is filtering.
+
+    Events are always recorded. This reports whether any of them are being
+    *sent* anywhere - a distinction that was invisible while MQTT was enabled
+    in config and no code ever called the publisher.
+    """
+    try:
+        from backend.services.management.notifications import (
+            get_notification_service,
+        )
+
+        return get_notification_service().status()
+    except Exception as e:
+        logger.error(f"Notification status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/notifications/test", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def send_test_notification():
+    """Send a synthetic alert through every configured channel.
+
+    Delivery is reported per transport with the real outcome, so a
+    misconfigured webhook is discovered here rather than during an incident.
+    Bypasses policy deliberately: this tests transport, not filtering.
+    """
+    try:
+        from backend.services.management.notifications import (
+            get_notification_service,
+        )
+
+        service = get_notification_service()
+        probe = {
+            "id": 0,
+            "camera_id": 0,
+            "rule_type": "test_notification",
+            "object_type": None,
+            "confidence": 1.0,
+            "priority": "low",
+            "status": "detected",
+            "timestamp": datetime.now(),
+            "metadata": {
+                "source": "manual_test",
+                "note": "Synthetic event from /notifications/test",
+            },
+        }
+        results = service._deliver(probe)
+        delivered = [r.to_dict() for r in results]
+        return {
+            "sent": bool(delivered),
+            "results": delivered,
+            "all_delivered": bool(delivered) and all(
+                r["delivered"] for r in delivered
+            ),
+            "note": (
+                "No channels are configured." if not delivered else
+                "Policy was bypassed for this test; real events are filtered."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Test notification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -52,6 +52,10 @@ _DEFAULTS: Dict[str, Any] = {
     # window is reached only after ~130 GB. This is a hard ceiling enforced on
     # every pass, oldest evicted first. 0 disables it.
     "snapshots_max_mb": 2048,
+    # Evidence clips. Video is far larger per item than a snapshot, so this
+    # window is short and the byte ceiling does the real work.
+    "clips_days": 14,
+    "clips_max_mb": 4096,
     # Phase 6 perception memory. Descriptors are re-identifying, so their
     # window is deliberately much shorter than the observations'.
     "perception_observations_days": 60,
@@ -129,6 +133,73 @@ def purge_snapshots(days: int) -> int:
         return removed
     except Exception as exc:  # noqa: BLE001 - retention must never crash the app
         logger.error(f"Snapshot retention failed: {exc}")
+        return 0
+
+
+def purge_clips(days: int) -> int:
+    """Delete evidence clips older than `days`. Returns files removed."""
+    if days <= 0:
+        return 0
+    try:
+        clip_dir = resolve_path(get_config().system.snapshot_dir).parent / "clips"
+        if not clip_dir.exists():
+            return 0
+        cutoff = time.time() - days * 86400
+        removed = 0
+        for path in clip_dir.glob("*.mp4"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError as exc:
+                logger.warning(f"Could not delete clip {path.name}: {exc}")
+        return removed
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Clip retention failed: {exc}")
+        return 0
+
+
+def enforce_clip_size_cap(max_mb: int) -> int:
+    """Hard byte ceiling on the clip directory, oldest evicted first.
+
+    Video dwarfs stills: one 10 s 480p clip measured ~4 MB against ~200 KB for
+    a snapshot. Without a ceiling a busy site fills the disk long before the
+    time window expires.
+    """
+    if max_mb <= 0:
+        return 0
+    try:
+        clip_dir = resolve_path(get_config().system.snapshot_dir).parent / "clips"
+        if not clip_dir.exists():
+            return 0
+        files = []
+        total = 0
+        for path in clip_dir.glob("*.mp4"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((stat.st_mtime, stat.st_size, path))
+            total += stat.st_size
+        budget = max_mb * 1024 * 1024
+        if total <= budget:
+            return 0
+        files.sort()
+        removed = 0
+        for _, size, path in files:
+            if total <= budget:
+                break
+            try:
+                path.unlink()
+                total -= size
+                removed += 1
+            except OSError as exc:
+                logger.warning(f"Could not evict clip {path.name}: {exc}")
+        if removed:
+            logger.info(f"Clip size cap evicted {removed} files")
+        return removed
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Clip size cap failed: {exc}")
         return 0
 
 
@@ -212,6 +283,10 @@ def run_retention_once() -> Dict[str, int]:
     results["snapshots"] = purge_snapshots(policy["snapshots_days"])
     results["snapshots_over_cap"] = enforce_snapshot_size_cap(
         policy.get("snapshots_max_mb", 0)
+    )
+    results["clips"] = purge_clips(policy.get("clips_days", 0))
+    results["clips_over_cap"] = enforce_clip_size_cap(
+        policy.get("clips_max_mb", 0)
     )
 
     total = sum(results.values())

@@ -49,7 +49,55 @@ class EventStore:
             )
             event_id = cursor.lastrowid
             logger.info(f"Created event: {rule_type} for camera {camera_id} (ID: {event_id})")
-            return self.get_event(event_id)
+
+            # Export pre-event footage for rules worth the cost. The clip path
+            # is recorded in metadata rather than a column so no migration is
+            # needed, and a failure to write one never blocks the event: the
+            # event is the guarantee, the clip is supporting evidence.
+            try:
+                from backend.services.management.evidence_clips import (
+                    get_evidence_service,
+                )
+
+                evidence = get_evidence_service()
+                if evidence.wants_clip(rule_type):
+                    clip = evidence.write_clip(camera_id, rule_type, event_id)
+                    payload = dict(metadata or {})
+                    payload["clip"] = clip.to_dict()
+                    self.db.execute(
+                        "UPDATE events SET metadata = ? WHERE id = ?",
+                        (json.dumps(payload), event_id),
+                    )
+                    if not clip.written:
+                        logger.warning(
+                            "No evidence clip for event %s: %s",
+                            event_id, clip.reason,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Evidence clip failed for event {event_id}: {exc}")
+
+            event = self.get_event(event_id)
+
+            # Deliver the alert. Every event in the system passes through this
+            # method, so it is the one place worth hooking - and until now
+            # nothing did: MQTTPublisher.publish_event() was fully implemented,
+            # mqtt.enabled was true in config, and no caller existed. Every
+            # event Argus ever produced was recorded and delivered nowhere.
+            #
+            # notify() applies policy, is non-blocking, and never raises, so a
+            # broken transport cannot stop an event being persisted. Recording
+            # the event is the guarantee; delivering it is best-effort and
+            # separately reported.
+            try:
+                from backend.services.management.notifications import (
+                    get_notification_service,
+                )
+
+                get_notification_service().notify(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Alert dispatch failed for event {event_id}: {exc}")
+
+            return event
         except Exception as e:
             logger.error(f"Error creating event: {e}")
             raise

@@ -356,6 +356,11 @@ class Config(BaseModel):
     # Empty means no camera is calibrated, and speed_violation stays inactive
     # rather than converting pixels to km/h with a guessed constant.
     camera_calibration: Dict[str, Dict[str, Any]] = {}
+    # Alert delivery policy and channels. Nested free-form so a new channel
+    # does not require a schema change to be readable.
+    notifications: Dict[str, Any] = {}
+    # Pre-event ring buffer and clip export.
+    evidence_clips: Dict[str, Any] = {}
 
 
 #: Absolute path to the repository root (the directory containing `backend/`).

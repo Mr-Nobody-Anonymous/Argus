@@ -21,6 +21,10 @@ retention:
   # pass by evicting the oldest files first. Time-based expiry alone cannot
   # bound disk usage inside the window. Set 0 to disable.
   snapshots_max_mb: 2048
+  # Evidence clips. A 10 s 480p clip measures ~4 MB against ~200 KB for a
+  # snapshot, so video needs a shorter window and its own ceiling.
+  clips_days: 14
+  clips_max_mb: 4096
   # Perception memory (Phase 6). Appearance descriptors are re-identifying and
   # expire quickly; the observations that cite them are text and are kept
   # longer for investigation.
@@ -349,6 +353,60 @@ rules:
     classes: [backpack, handbag, suitcase, bottle, laptop]
     priority: medium
     description: "Stationary object unattended past the threshold"
+
+# Pre-event video evidence.
+#
+# A snapshot shows the instant a rule fired; a clip shows the approach. Frames
+# are buffered JPEG-encoded because raw 480p costs ~88 MB per camera for 10 s,
+# which does not fit alongside the detection model on a small host.
+evidence_clips:
+  enabled: true
+  pre_event_seconds: 10
+  fps: 10
+  jpeg_quality: 80
+  # Hard per-camera memory ceiling. Enforced in bytes as well as frames,
+  # because frame size varies ~40x with scene content.
+  max_mb_per_camera: 24
+  # Only these rules are worth a clip. Writing one costs a decode per frame
+  # plus disk, so exporting for every scene_change would be waste.
+  clip_rules:
+    - intrusion
+    - line_crossing
+    - abandoned_object
+    - fall_detection
+    - speed_violation
+
+# Alert delivery.
+#
+# Events are always recorded in the database. This section controls whether
+# they are also *sent* anywhere. Until this existed, mqtt.enabled was true and
+# nothing ever called the publisher, so every alert stayed in SQLite.
+#
+# Channel availability is probed at send time, never assumed from these flags:
+# GET /api/v1/notifications/status reports what can actually deliver right now.
+notifications:
+  policy:
+    # Only deliver events at or above this priority. Everything is still
+    # recorded and queryable regardless.
+    min_priority: medium
+    # Empty allow list means "all rules". Deny wins over allow.
+    rules_allow: []
+    rules_deny: []
+    # Per-rule quiet hours as [start_hour, end_hour], 24h clock. May wrap
+    # midnight, e.g. [22, 6]. Use "*" to apply to every rule.
+    #   quiet_hours:
+    #     scene_change: [22, 6]
+    quiet_hours: {}
+    # Per (camera, rule) ceiling, so one flapping camera cannot exhaust a pager.
+    rate_limit_per_minute: 20
+  channels:
+    mqtt:
+      enabled: true
+    webhook:
+      enabled: false
+      url: ""
+      timeout_s: 5.0
+      headers: {}
 
 # Per-camera ground-plane calibration.
 #
