@@ -27,7 +27,9 @@ This document provides a comprehensive overview of the Argus AI Video Analytics 
 | `.env.example` | Every `ARGUS_*` environment variable with an explanatory comment |
 | `package.json` | Root-level workspace pointer (frontend is in `frontend/`) |
 | `package-lock.json` | Root dependency lock |
-| `run_app.bat` | Windows launcher — starts uvicorn backend + Vite frontend concurrently |
+| `argus.py` | **One-command launcher** — sets up and runs everything on any OS (`start` / `stop` / `status` / `doctor` / `reset`). Stdlib-only by design |
+| `start.bat` / `stop.bat` | Windows double-click wrappers around `argus.py` |
+| `start.command` / `stop.command` | macOS/Linux double-click wrappers |
 | `run_webcam.bat` | Windows launcher — runs webcam tester for PC camera (standalone) |
 | `docker-compose.yml` | Main Docker Compose — backend, frontend, Mosquitto MQTT, Qdrant, Kafka |
 | `docker-compose.mediamtx.yml` | Optional Docker Compose — MediaMTX RTSP server + Kafka + Elasticsearch + Grafana |

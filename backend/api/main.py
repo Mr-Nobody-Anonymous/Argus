@@ -1235,7 +1235,7 @@ async def get_metrics():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/")
+@app.get("/api")
 async def root():
     """Root endpoint"""
     return {
@@ -1260,6 +1260,76 @@ async def root():
             "Kafka Event Streaming (optional)"
         ]
     }
+
+
+# ==================== Single-port web UI ====================
+# Serving the built React app from FastAPI means `argus start` exposes ONE url
+# (http://localhost:8000) with no Node runtime, no second port and no proxy.
+# This is mounted last, after every API router, so it can never shadow an API
+# route: StaticFiles only ever sees paths that did not match anything above.
+#
+# When frontend/dist is absent (a source checkout that has not been built yet)
+# the mount is skipped and "/" serves a short message telling the user how to
+# build it, instead of a confusing 404.
+
+_FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+
+def _ui_is_built() -> bool:
+    return (_FRONTEND_DIST / "index.html").is_file()
+
+
+if _ui_is_built():
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    class _SpaStaticFiles(StaticFiles):
+        """StaticFiles that falls back to index.html for client-side routes.
+
+        The dashboard uses browser-side routing (/events, /analytics, ...).
+        Those paths have no file on disk, so a plain StaticFiles mount would
+        404 whenever a user refreshes the page or opens a deep link.
+        """
+
+        # Paths that must keep returning a real 404 instead of the SPA shell.
+        # An unknown /api/... route is a client error and has to stay JSON:
+        # serving index.html there would make every typo look like a success
+        # and break error handling in API consumers.
+        _NEVER_SPA = ("api/", "docs", "redoc", "openapi.json", "metrics", "snapshots/")
+
+        async def get_response(self, path: str, scope):
+            # Starlette RAISES HTTPException(404) for a missing file rather
+            # than returning a 404 response, so both paths must be handled or
+            # deep links silently break on refresh.
+            def _is_api(p: str) -> bool:
+                p = p.lstrip("/")
+                return any(p == n or p.startswith(n) for n in self._NEVER_SPA)
+
+            try:
+                response = await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404 or _is_api(path):
+                    raise
+                return await super().get_response("index.html", scope)
+            if response.status_code == 404 and not _is_api(path):
+                return await super().get_response("index.html", scope)
+            return response
+
+    app.mount("/", _SpaStaticFiles(directory=str(_FRONTEND_DIST), html=True), name="ui")
+    logger.info(f"Serving dashboard from {_FRONTEND_DIST}")
+else:
+    @app.get("/", include_in_schema=False)
+    async def _ui_not_built():
+        return {
+            "name": "Argus API",
+            "status": "running",
+            "dashboard": "not built",
+            "hint": "Run 'python argus.py start' (it builds the UI automatically), "
+                    "or build it manually with: cd frontend && npm install && npm run build",
+            "api_docs": "/docs",
+            "api_root": "/api",
+        }
+
+    logger.info("frontend/dist not found - dashboard not served (API only)")
 
 
 if __name__ == "__main__":

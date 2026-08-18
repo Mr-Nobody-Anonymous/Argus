@@ -299,6 +299,51 @@ jobs:
             || { echo "::error::/metrics returned no argus_ metrics"; kill $SERVER; exit 1; }
           kill $SERVER
 
+  launcher:
+    name: One-command launcher (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The whole point of argus.py is that it behaves identically on every
+        # desktop OS, so it has to be exercised on every desktop OS.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Oldest supported interpreter: catches 3.10+ only syntax slipping in.
+          python-version: "3.9"
+
+      - name: Launcher must be stdlib-only and importable
+        # It runs BEFORE dependencies exist, so it may not import anything
+        # third-party and must parse on the oldest supported Python.
+        run: python -c "import ast,sys; ast.parse(open('argus.py').read()); print('parsed on', sys.version)"
+
+      - name: doctor runs on a bare machine
+        run: python argus.py doctor
+
+      - name: stop is safe when nothing is running
+        run: python argus.py stop
+
+      - name: status is safe when nothing is running
+        run: python argus.py status
+
+      - name: Windows wrappers must keep CRLF endings
+        shell: python
+        run: |
+          import sys
+          bad = []
+          for name in ("start.bat", "stop.bat"):
+              data = open(name, "rb").read()
+              if data.replace(b"\r\n", b"").count(b"\n"):
+                  bad.append(name)
+          if bad:
+              print(f"::error::bare LF line endings in {bad} - cmd.exe will misparse them")
+              sys.exit(1)
+          print("start.bat and stop.bat use CRLF")
+
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest

@@ -836,3 +836,133 @@ class TestCameraLivenessIsNotPersisted:
         assert 11 not in cr.snapshot(), "runtime state leaked after deletion"
         assert cr.get_status(11)["status"] == "offline"
         cr.clear_all()
+
+
+class TestOneCommandLauncher:
+    """The launcher is the first thing a new user touches.
+
+    It must stay stdlib-only (it runs BEFORE dependencies exist), must not
+    hard-code an OS, and must keep the documented commands available.
+    """
+
+    LAUNCHER = PROJECT_ROOT / "argus.py"
+
+    def test_launcher_exists_and_compiles(self):
+        import py_compile
+        assert self.LAUNCHER.is_file(), "argus.py is missing"
+        py_compile.compile(str(self.LAUNCHER), doraise=True)
+
+    def test_launcher_imports_only_stdlib(self):
+        """A third-party import here would crash before it could install it."""
+        import ast
+        import sys
+
+        tree = ast.parse(self.LAUNCHER.read_text(encoding="utf-8"))
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    roots.add(a.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.level == 0:
+                    roots.add(node.module.split(".")[0])
+
+        stdlib = set(getattr(sys, "stdlib_module_names", ()))
+        offenders = sorted(
+            r for r in roots
+            if r and not r.startswith("_") and stdlib and r not in stdlib
+        )
+        assert not offenders, f"argus.py must be stdlib-only, found: {offenders}"
+
+    def test_documented_subcommands_are_wired(self):
+        src = self.LAUNCHER.read_text(encoding="utf-8")
+        for cmd in ("start", "stop", "status", "doctor", "reset"):
+            assert f'sub.add_parser("{cmd}"' in src, f"missing subcommand: {cmd}"
+
+    def test_no_hardcoded_posix_only_paths(self):
+        """Windows support breaks if the venv path is hard-coded to bin/."""
+        src = self.LAUNCHER.read_text(encoding="utf-8")
+        assert 'Scripts/python.exe' in src, "no Windows venv path"
+        assert 'os.name == "nt"' in src, "no Windows detection"
+
+    def test_windows_wrappers_use_crlf(self):
+        """cmd.exe mishandles .bat files saved with bare LF endings."""
+        for name in ("start.bat", "stop.bat"):
+            p = PROJECT_ROOT / name
+            assert p.is_file(), f"{name} is missing"
+            data = p.read_bytes()
+            lone_lf = data.replace(b"\r\n", b"").count(b"\n")
+            assert lone_lf == 0, f"{name} has {lone_lf} bare LF line endings"
+
+    def test_unix_wrappers_are_executable(self):
+        import stat
+        for name in ("start.command", "stop.command"):
+            p = PROJECT_ROOT / name
+            assert p.is_file(), f"{name} is missing"
+            mode = p.stat().st_mode
+            assert mode & stat.S_IXUSR, f"{name} is not executable"
+
+    def test_launcher_state_is_gitignored(self):
+        """A committed .env would leak the generated JWT secret."""
+        ignored = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+        for entry in (".venv/", ".argus/", ".env"):
+            assert entry in ignored, f"{entry} must be gitignored"
+
+
+class TestSinglePortDashboard:
+    """The UI is served by FastAPI so one URL is all a user needs."""
+
+    def _client(self):
+        """Boot the real app with a built UI present, via TestClient."""
+        import shutil
+        from fastapi.testclient import TestClient
+
+        dist = PROJECT_ROOT / "frontend" / "dist"
+        created = False
+        if not (dist / "index.html").is_file():
+            dist.mkdir(parents=True, exist_ok=True)
+            (dist / "index.html").write_text(
+                "<!doctype html><title>argus</title>", encoding="utf-8"
+            )
+            created = True
+
+        # main.py decides whether to mount the UI at import time.
+        for mod in [m for m in list(sys.modules) if m.startswith("backend.api.main")]:
+            del sys.modules[mod]
+        from backend.api.main import app
+        return TestClient(app), (dist / "index.html") if created else None
+
+    def test_unknown_api_path_stays_json_404(self):
+        """The SPA fallback must never swallow an unknown /api route.
+
+        Exercised through real requests: a grep-based check silently passes
+        when the guard is renamed or removed.
+        """
+        client, tmp_index = self._client()
+        try:
+            for path in ("/api/v1/nonexistent", "/api/bogus", "/openapi.json/x"):
+                r = client.get(path)
+                assert r.status_code == 404, f"{path} -> {r.status_code}, expected 404"
+                assert "text/html" not in r.headers.get("content-type", ""), (
+                    f"{path} returned the SPA shell instead of a JSON 404"
+                )
+
+            # ...while a browser route still gets the app shell.
+            r = client.get("/events")
+            assert r.status_code == 200, "SPA deep link must return index.html"
+            assert "text/html" in r.headers.get("content-type", "")
+        finally:
+            if tmp_index is not None:
+                tmp_index.unlink(missing_ok=True)
+
+    def test_spa_fallback_handles_raised_404(self):
+        """Starlette raises HTTPException(404); returning-only checks miss it."""
+        src = (PROJECT_ROOT / "backend" / "api" / "main.py").read_text(encoding="utf-8")
+        assert "StarletteHTTPException" in src, (
+            "SPA fallback must catch Starlette's raised 404, not just a returned one"
+        )
+
+    def test_ui_mount_is_optional(self):
+        """A source checkout with no build must still boot as an API."""
+        src = (PROJECT_ROOT / "backend" / "api" / "main.py").read_text(encoding="utf-8")
+        assert "_ui_is_built()" in src, "no guard for a missing frontend build"

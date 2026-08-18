@@ -77,6 +77,60 @@ Performance note: on CPU the pipeline runs at **~1.3–1.6 FPS per camera** with
 
 ## 🚀 Quick Start
 
+### One command, any OS
+
+```bash
+python argus.py start
+```
+
+That is the whole install. It works the same on **Windows, macOS and Linux**,
+and it is safe to re-run — everything below is skipped once it is already done:
+
+1. generates a strong `ARGUS_JWT_SECRET` into `.env` (first run only)
+2. picks a runtime — **Docker** if the daemon is responding, otherwise a local
+   `.venv` (force either with `--native` / `--docker`)
+3. installs dependencies, using **CPU PyTorch wheels** so the download is
+   ~200 MB instead of ~2.5 GB of unusable CUDA payload
+4. creates the database and seeds the `admin` user
+5. builds the dashboard and serves it from the API on **one port**
+6. waits for `/api/v1/health`, then opens your browser
+
+```
+  Argus is running
+    Dashboard   http://localhost:8000
+    API docs    http://localhost:8000/docs
+    Login       admin / admin123
+
+    Stop it     python argus.py stop
+```
+
+**Prefer not to use a terminal?** Double-click `start.bat` (Windows) or
+`start.command` (macOS/Linux). `stop.bat` / `stop.command` shut it down.
+
+| Command | What it does |
+|---|---|
+| `python argus.py start` | Set everything up and run it |
+| `python argus.py stop` | Stop everything (graceful, then forced) |
+| `python argus.py status` | Show mode, port, PID and health |
+| `python argus.py doctor` | Check this machine *before* installing |
+| `python argus.py reset` | Delete the venv/build (`--all` also drops the DB) |
+
+Useful flags: `--port 9000`, `--native`, `--docker`, `--rebuild`,
+`--reinstall`, `--no-browser`, `--host 127.0.0.1`.
+
+If something goes wrong, `start` prints the tail of `.argus/backend.log` and
+tells you where the full log is. Run `python argus.py doctor` first if you want
+to check Python, Node, Docker, disk space and port availability up front.
+
+> The launcher itself imports **only the Python standard library** — it has to
+> run before any dependency exists. A test enforces that.
+
+---
+
+### Manual setup (for development)
+
+Prefer hot-reload and separate processes? The original flow still works.
+
 ### Prerequisites
 - Python 3.9+ and Node.js 18+
 - 4 GB RAM minimum
@@ -133,14 +187,16 @@ The dashboard opens on a login screen. Tokens are held in `sessionStorage` and
 refreshed transparently, so a 30-minute access-token expiry will not sign an
 operator out mid-shift.
 
-**💡 Windows shortcut:** double-click `run_app.bat`.
+**💡 Shortcut:** `python argus.py start` does all of the above in one step and serves the built dashboard on port 8000 instead.
 
 ### 4. Access
 | Service          | URL                          |
 |------------------|------------------------------|
-| Dashboard        | http://localhost:3000        |
+| Dashboard (`argus.py start`) | http://localhost:8000 |
+| Dashboard (`npm run dev`)    | http://localhost:3000 |
 | ├ Cameras / Events / Analytics | `/` · `/events` · `/analytics` |
-| └ Adaptive Learning | http://localhost:3000/learning |
+| └ Adaptive Learning | `/learning` |
+| API banner (JSON) | http://localhost:8000/api |
 | API Docs         | http://localhost:8000/docs   |
 | Prometheus metrics | http://localhost:8000/metrics |
 | WebSocket Stream | `ws://localhost:8000/api/ws/stream/{camera_id}?token=<jwt>` |
@@ -569,7 +625,7 @@ log line, with any `extra={...}` fields merged in — so logs can be filtered by
 pytest        # collects exactly these two suites (see pytest.ini)
 ```
 
-**74 tests, all passing** in ~14 s (1 skipped when the events table is empty).
+**84 tests, all passing** in ~14 s (1 skipped when the events table is empty).
 
 Every push and pull request runs these on Python 3.11 and 3.13 via
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
@@ -580,7 +636,7 @@ scan, a gitignore-hygiene check, and a frontend build. See
 
 | Suite | Tests | Guards against |
 |---|---|---|
-| `tests/test_regression.py` | 51 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk |
+| `tests/test_regression.py` | 61 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s |
 | `tests/test_api_security.py` | 23 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, orphaned/duplicate role grants, plaintext secrets in config |
 
 These are **mutation-verified** — deliberately reintroducing a bug (e.g. the

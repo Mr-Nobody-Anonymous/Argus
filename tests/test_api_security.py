@@ -269,6 +269,10 @@ class TestRouteProtection:
         "/api/v1/auth/login",
         "/api/v1/auth/refresh",
         "/api/v1/health",
+        # The unauthenticated banner moved from "/" to "/api" when the built
+        # dashboard took over "/". It exposes only a name, version and a
+        # static feature list - no data, no configuration.
+        "/api",
         "/",
         "/openapi.json",
         "/docs",

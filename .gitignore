@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
+# Launcher state: pid file, mode, backend log, and the local pip temp dir.
+.argus/
 .env
 
 # JavaScript
