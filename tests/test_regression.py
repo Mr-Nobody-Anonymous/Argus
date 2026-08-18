@@ -12,10 +12,14 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
+import tomllib
 from pathlib import Path
+
+import yaml
 
 import numpy as np
 import pytest
@@ -3913,3 +3917,153 @@ class TestProtectedEvidenceIsFetchedWithAuth:
             "clips must be fetched through the authenticated client, not a "
             "bare <video src> which cannot send a bearer token"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment portability
+#
+# These assert the properties that let Argus run on a machine nobody has logged
+# into: a platform-assigned port, a mounted data disk, and a dashboard that can
+# be hosted apart from the API. Each one, when broken, produces a deploy that
+# fails on the user's server rather than in CI.
+# ─────────────────────────────────────────────────────────────────────────────
+class TestDeploymentPortability:
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_entrypoint_binds_the_platform_assigned_port(self):
+        """Render/Railway/Fly/Cloud Run inject $PORT and health-check it.
+
+        Hardcoding 8000 makes the platform's probe fail against a perfectly
+        healthy app, which surfaces as a deploy timeout with no error in the
+        logs - among the most confusing failures to diagnose remotely.
+        """
+        ep = (self.ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert 'PORT="${PORT:-8000}"' in ep, "must read $PORT with a local default"
+        assert '--port "$PORT"' in ep, "uvicorn must bind the resolved $PORT"
+
+    def test_entrypoint_execs_uvicorn_for_signal_delivery(self):
+        """Without exec the shell stays PID 1 and never forwards SIGTERM, so
+        every deploy waits out the platform's kill timeout."""
+        ep = (self.ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "exec python -m uvicorn" in ep
+
+    def test_entrypoint_refuses_to_start_without_a_signing_key(self):
+        """An ephemeral JWT secret signs everyone out on each restart. That is
+        an intermittent bug users blame on the browser, so fail loudly."""
+        ep = (self.ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert 'if [ -z "${ARGUS_JWT_SECRET:-}" ]' in ep
+        assert "exit 1" in ep
+
+    def test_mutable_state_is_redirectable_to_a_mounted_disk(self):
+        """Container filesystems are ephemeral. Both the SQLite database and
+        the snapshot directory must follow ARGUS_DATA_DIR or a redeploy wipes
+        users, cameras and recorded evidence."""
+        cfg = (self.ROOT / "config" / "config.yaml").read_text(encoding="utf-8")
+        assert "${ARGUS_DATA_DIR:-data}/snapshots" in cfg
+        assert "sqlite:///${ARGUS_DATA_DIR:-data}/argus.db" in cfg
+
+    def test_data_dir_env_var_actually_relocates_state(self):
+        """Interpolation is only useful if the loader applies it. Asserts the
+        resolved values change, not merely that the placeholder is present."""
+        import importlib
+        import backend.config.config as cfgmod
+
+        prev = os.environ.get("ARGUS_DATA_DIR")
+        try:
+            os.environ["ARGUS_DATA_DIR"] = "/mnt/argus-test"
+            importlib.reload(cfgmod)
+            cfg = cfgmod.get_config()
+            assert cfg.system.snapshot_dir == "/mnt/argus-test/snapshots"
+            # Four slashes: sqlite:/// plus an absolute /mnt path.
+            assert cfg.database.url == "sqlite:////mnt/argus-test/argus.db"
+        finally:
+            if prev is None:
+                os.environ.pop("ARGUS_DATA_DIR", None)
+            else:
+                os.environ["ARGUS_DATA_DIR"] = prev
+            importlib.reload(cfgmod)
+            cfgmod.get_config()
+
+    def test_frontend_api_origin_is_build_time_configurable(self):
+        """A static host (Vercel/Netlify) cannot run the Python API, so the
+        dashboard must be buildable against a backend on another origin."""
+        api = (self.ROOT / "frontend" / "src" / "services" / "api.js").read_text(
+            encoding="utf-8"
+        )
+        assert "VITE_API_ORIGIN" in api
+        assert "${API_ORIGIN}/api/v1" in api
+
+    def test_websocket_url_follows_the_api_origin(self):
+        """The regression this guards: deriving the socket host from
+        window.location unconditionally. On a split deploy the browser then
+        opens a socket back at the static host, which speaks no WebSocket, and
+        the video wall is permanently dead with a confusing console error.
+        """
+        api = (self.ROOT / "frontend" / "src" / "services" / "api.js").read_text(
+            encoding="utf-8"
+        )
+        idx = api.index("export const buildStreamUrl")
+        # Slice to the end of the function, not a fixed character count: a
+        # window that stops short can pass or fail on comment length alone.
+        body = api[idx : api.index("\n};", idx)]
+        assert "API_ORIGIN" in body, "stream URL must consider API_ORIGIN"
+        assert "new URL(API_ORIGIN" in body, "must resolve the configured origin"
+        # https pages must not open ws:// - the browser blocks it as mixed content.
+        assert "'https:'" in body and "wss:" in body
+
+    def test_snapshot_client_honours_the_api_origin(self):
+        """snapshotAPI overrides baseURL (it lives under /api, not /api/v1). A
+        hardcoded '/api' there breaks evidence on a split deploy even when
+        every other call works - a subtle, partial failure."""
+        api = (self.ROOT / "frontend" / "src" / "services" / "api.js").read_text(
+            encoding="utf-8"
+        )
+        assert "baseURL: `${API_ORIGIN}/api`" in api
+        assert "baseURL: '/api'" not in api
+
+    def test_vercel_config_deploys_only_the_static_dashboard(self):
+        """Vercel cannot host this backend: ~955 MB of torch/opencv against a
+        500 MB function limit, no WebSocket server, and no persistent process
+        for the retention thread. The config must not pretend otherwise."""
+        vercel = json.loads((self.ROOT / "vercel.json").read_text(encoding="utf-8"))
+        assert vercel["outputDirectory"] == "frontend/dist"
+        assert "functions" not in vercel and "builds" not in vercel, (
+            "no Python function may be declared - the backend cannot run here"
+        )
+
+    def test_single_worker_is_enforced(self):
+        """Argus holds the coordinator, tracker state and a retention thread
+        in-process and writes to SQLite. A second worker duplicates the thread
+        and races on the database; events then vanish depending on which worker
+        served the request, which reads as data loss rather than misconfig."""
+        ep = (self.ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "--workers" not in ep.split("exec python -m uvicorn")[1], (
+            "the serve command must not pass --workers"
+        )
+
+    def test_deploy_workflow_smoke_tests_the_image_before_publishing(self):
+        """A published image that cannot boot fails on the user's server. The
+        workflow must prove both the API and the dashboard respond."""
+        wf = yaml.safe_load(
+            (self.ROOT / ".github" / "workflows" / "deploy.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        steps = wf["jobs"]["build"]["steps"]
+        smoke = [s for s in steps if "Smoke" in str(s.get("name", ""))]
+        assert smoke, "deploy workflow must smoke-test the image"
+        run = smoke[0]["run"]
+        assert "/api/v1/health" in run, "must verify the API answers"
+        assert "docker logs" in run, "must surface logs when the boot fails"
+
+    def test_platform_configs_mount_a_disk_at_the_configured_data_dir(self):
+        """A volume mounted anywhere other than ARGUS_DATA_DIR silently
+        persists nothing: the app writes to the container filesystem while an
+        empty disk sits alongside it."""
+        render = yaml.safe_load((self.ROOT / "render.yaml").read_text(encoding="utf-8"))
+        svc = render["services"][0]
+        env = {e["key"]: e.get("value") for e in svc["envVars"]}
+        assert svc["disk"]["mountPath"] == env["ARGUS_DATA_DIR"]
+
+        fly = tomllib.loads((self.ROOT / "fly.toml").read_text(encoding="utf-8"))
+        assert fly["mounts"][0]["destination"] == fly["env"]["ARGUS_DATA_DIR"]

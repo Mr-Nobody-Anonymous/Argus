@@ -1,6 +1,20 @@
 import axios from 'axios';
 
-const API_BASE_URL = '/api/v1';
+// ── Where the API lives ──────────────────────────────────────────────────────
+// Default '' means "same origin as this page", which is what happens when the
+// API serves the built UI itself (docker, Render, a VPS). Set VITE_API_ORIGIN
+// at BUILD time to point the dashboard at a backend on a different host - that
+// is what makes a static deploy (Vercel, Netlify, GitHub Pages) possible, since
+// those platforms cannot run the Python API.
+//
+//     VITE_API_ORIGIN=https://argus-api.example.com npm run build
+//
+// Trailing slashes are stripped so '.../' and '...' behave identically; a value
+// that is only a slash collapses to same-origin.
+const rawOrigin = (import.meta.env?.VITE_API_ORIGIN ?? '').trim();
+export const API_ORIGIN = rawOrigin.replace(/\/+$/, '');
+
+const API_BASE_URL = `${API_ORIGIN}/api/v1`;
 
 const ACCESS_KEY = 'argus_access_token';
 const REFRESH_KEY = 'argus_refresh_token';
@@ -120,10 +134,20 @@ export const authAPI = {
 // Browsers cannot set headers on a WebSocket handshake, so the token travels as
 // a query parameter - which is why the backend authenticates before accept().
 export const buildStreamUrl = (cameraId) => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = tokenStore.getAccess();
     const query = token ? `?token=${encodeURIComponent(token)}` : '';
-    return `${proto}//${window.location.host}/api/ws/stream/${cameraId}${query}`;
+
+    // Derive the socket host from API_ORIGIN when the API is on another host,
+    // otherwise from the page. Deriving it from window.location unconditionally
+    // (as this used to) breaks every split deployment: the browser would open a
+    // socket back to the static host, which speaks no WebSocket at all.
+    // http->ws and https->wss, so an https page never opens an insecure socket
+    // that the browser would block as mixed content.
+    const base = API_ORIGIN
+        ? new URL(API_ORIGIN, window.location.href)
+        : window.location;
+    const proto = base.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${base.host}/api/ws/stream/${cameraId}${query}`;
 };
 
 // Camera API
@@ -184,7 +208,7 @@ export const snapshotAPI = {
     fetch: async (cameraId, filename) => {
         const res = await api.get(
             `/snapshots/${cameraId}/${encodeURIComponent(filename)}`,
-            { baseURL: '/api', responseType: 'blob' },
+            { baseURL: `${API_ORIGIN}/api`, responseType: 'blob' },
         );
         return URL.createObjectURL(res.data);
     },

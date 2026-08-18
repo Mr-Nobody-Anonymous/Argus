@@ -1,0 +1,152 @@
+name: Build & publish image
+
+# Builds the production image and publishes it to GitHub Container Registry, so
+# deploying Argus anywhere becomes a pull instead of a build. Most hosts have
+# neither the RAM nor the patience for a torch install plus a Vite build, and a
+# build that happens once in CI cannot fail differently on each target machine.
+#
+# The published image is public-readable by default for public repos:
+#     docker run -p 8000:8000 -e ARGUS_JWT_SECRET=... ghcr.io/OWNER/argus:latest
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+    # Docs-only commits should not spend ten minutes rebuilding torch.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: "Push to GHCR (uncheck to build only)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository is OWNER/REPO; lowercased below because GHCR rejects
+  # uppercase path segments and many GitHub usernames contain capitals.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase the image name
+        id: img
+        run: echo "name=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Only authenticate when the image will actually be pushed. Fork PRs get
+      # a read-only token, so an unconditional login fails for outside
+      # contributors on a workflow that otherwise would have worked.
+      - name: Log in to GHCR
+        if: github.event_name != 'workflow_dispatch' || inputs.push_image
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push_image }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache in the registry: a rebuild that only changes Python
+          # source reuses the torch install and the npm install, cutting a
+          # ~10 minute build to about one.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # linux/amd64 only. arm64 would need QEMU emulation for the torch
+          # install, which pushes the build past the 6 hour job limit. Users on
+          # Apple Silicon or Graviton should build locally instead.
+          platforms: linux/amd64
+
+      # A pushed image that cannot start is worse than no image: the failure
+      # surfaces on the user's server, not here. Boot it and require the health
+      # endpoint to answer before the tag is considered good.
+      - name: Smoke-test the built image
+        if: github.event_name != 'workflow_dispatch' || inputs.push_image
+        run: |
+          set -euo pipefail
+          IMAGE="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "Testing $IMAGE"
+
+          docker run -d --name argus-smoke \
+            -p 8000:8000 \
+            -e ARGUS_JWT_SECRET=smoke-test-secret-key-at-least-32-chars \
+            -e ARGUS_ADMIN_PASSWORD=SmokeTest-$RANDOM \
+            "$IMAGE"
+
+          # Cold start imports torch and loads the detector; poll rather than
+          # sleeping a fixed amount.
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+              echo "Healthy after ${i}0s"
+              curl -fsS http://127.0.0.1:8000/api/v1/health
+              echo
+
+              # The dashboard must be served too - a backend-only image would
+              # pass a health check while showing users a blank page.
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/)
+              test "$code" = "200" || { echo "Dashboard not served (HTTP $code)"; exit 1; }
+              echo "Dashboard served OK"
+
+              docker rm -f argus-smoke >/dev/null
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Image failed to become healthy. Logs:"
+          docker logs argus-smoke
+          exit 1
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```'
+            echo '${{ steps.meta.outputs.tags }}'
+            echo '```'
+            echo
+            echo "Run it:"
+            echo '```bash'
+            echo "docker run -p 8000:8000 \\"
+            echo "  -e ARGUS_JWT_SECRET=\"\$(openssl rand -base64 48)\" \\"
+            echo "  -e ARGUS_ADMIN_PASSWORD='choose-a-password' \\"
+            echo "  -v argus-data:/app/data \\"
+            echo "  $(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

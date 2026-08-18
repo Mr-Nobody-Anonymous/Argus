@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Fly.io configuration.
+#
+#   fly launch --no-deploy --copy-config     # creates the app, keeps this file
+#   fly volumes create argus_data --size 10  # persistent storage, same region
+#   fly secrets set ARGUS_JWT_SECRET="$(openssl rand -base64 48)"
+#   fly secrets set ARGUS_ADMIN_PASSWORD='...'
+#   fly deploy
+#
+# Change `app` to your own name before deploying.
+# ─────────────────────────────────────────────────────────────────────────────
+app = "argus-surveillance"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ARGUS_DATA_DIR = "/data"
+  YOLO_CONFIG_DIR = "/data/.ultralytics"
+  ARGUS_LOG_FORMAT = "json"
+  ARGUS_LOG_LEVEL = "INFO"
+  PORT = "8000"
+
+[[mounts]]
+  source = "argus_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+
+  # Never suspend to zero. Argus is not a request/response app: it holds camera
+  # connections, tracker state and pre-event frame buffers. A suspended machine
+  # drops every stream and loses the rolling buffer that evidence clips are cut
+  # from, so an alert that fires just after a wake-up has no footage behind it.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # One machine, for the same reason as Render: in-process state plus SQLite.
+  # Scaling out requires Postgres and an externalised coordinator first.
+  [http_service.concurrency]
+    type = "connections"
+    # WebSocket video streams are long-lived connections, not short requests.
+    # A low limit here would reject operators opening the video wall.
+    hard_limit = 250
+    soft_limit = 200
+
+[checks]
+  [checks.health]
+    type = "http"
+    port = 8000
+    method = "GET"
+    path = "/api/v1/health"
+    interval = "30s"
+    timeout = "10s"
+    # Cold start loads torch and the YOLO weights. A shorter grace period marks
+    # the machine unhealthy mid-boot and Fly restarts it in a loop.
+    grace_period = "120s"
+
+[[vm]]
+  # 2 GB is the floor: torch + YOLOv8n + the frame buffers sit around 600 MB
+  # before any camera is attached, and the OOM killer takes the process with no
+  # log line explaining why.
+  size = "shared-cpu-2x"
+  memory = "2gb"

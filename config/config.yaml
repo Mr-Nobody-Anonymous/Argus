@@ -3,7 +3,10 @@ system:
   max_cameras: 100
   snapshot_retention_days: 30
   log_level: INFO
-  snapshot_dir: data/snapshots
+  # ${ARGUS_DATA_DIR:-data} lets a hosting platform point all mutable state at
+  # a mounted disk (Render/Fly persistent volume, Docker volume) without
+  # editing this file. Defaults to ./data for a plain source checkout.
+  snapshot_dir: ${ARGUS_DATA_DIR:-data}/snapshots
 
 # Data Retention / Privacy
 # Enforced by a background scheduler (backend/services/management/retention.py).
@@ -82,7 +85,10 @@ mqtt:
   qos: 1
 
 database:
-  url: sqlite:///data/argus.db
+  # Same ${ARGUS_DATA_DIR} anchor as snapshot_dir: on an ephemeral container
+  # filesystem the DB must live on the mounted disk or every restart wipes
+  # users, cameras and events.
+  url: sqlite:///${ARGUS_DATA_DIR:-data}/argus.db
 
 # ── Mock Camera Definitions (for stream_simulator + API seeding) ──
 cameras:

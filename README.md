@@ -739,6 +739,49 @@ accepting the connection.
 
 ---
 
+## 🚢 Deployment
+
+Argus runs anywhere that can run a container. Full guide:
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+```bash
+cp .env.example .env
+echo "ARGUS_JWT_SECRET=$(openssl rand -base64 48)" >> .env
+echo "ARGUS_ADMIN_PASSWORD=choose-a-strong-one"    >> .env
+docker compose -f docker-compose.prod.yml up -d
+```
+
+| Target | Config | Hosts |
+|---|---|---|
+| Docker / VPS / on-prem | `docker-compose.prod.yml` | Everything |
+| Render | `render.yaml` | Everything |
+| Fly.io | `fly.toml` | Everything |
+| Railway | `railway.json` | Everything |
+| GHCR image | `.github/workflows/deploy.yml` | Everything |
+| Vercel | `vercel.json` | **Dashboard only** |
+
+The container reads the platform's `$PORT`, creates the schema on first boot,
+sets the admin password from `ARGUS_ADMIN_PASSWORD` without ever baking a
+default into the image, and refuses to start without `ARGUS_JWT_SECRET` rather
+than signing tokens with an ephemeral key that logs everyone out on restart.
+
+**Two things worth knowing before choosing a host.**
+
+*Argus needs a disk.* All mutable state — the SQLite database, snapshots,
+evidence clips — lives under `ARGUS_DATA_DIR`. On a container platform that
+must be a mounted volume. Mounting one at any other path persists nothing while
+appearing to work until the first restart.
+
+*Vercel cannot host the backend.* Not a configuration problem: the dependency
+set is ~955 MB against a 500 MB function limit, serverless functions cannot
+hold WebSocket connections open for video, there is no persistent process for
+the retention thread, and the filesystem is ephemeral. `vercel.json` therefore
+deploys the **dashboard only**; point it at an API hosted elsewhere by setting
+`VITE_API_ORIGIN` at build time. Serving the UI from the API container is
+simpler and has no CORS surface.
+
+---
+
 ## 📈 Observability
 
 ```bash
@@ -872,7 +915,11 @@ argus/
 ├── requirements-optional.txt             # Heavy/optional extras (django, kafka, qdrant…)
 ├── .env.example                          # Every ARGUS_* variable, documented
 ├── config/config.yaml                    # Agents, rules, retention; supports ${VAR}
-├── docker/, docker-compose.yml           # Container builds
+├── Dockerfile                            # Production image (API + built dashboard)
+├── docker/, docker-compose.yml           # Development container builds
+├── docker-compose.prod.yml               # Production stack (single image + volume)
+├── render.yaml, fly.toml, railway.json   # One-click platform blueprints
+├── vercel.json                           # Static dashboard only - see docs/DEPLOYMENT.md
 ├── infrastructure/, mediamtx/, mosquitto/
 ├── data/                                 # argus.db, snapshots, known_faces, demo_clip.mp4
 │

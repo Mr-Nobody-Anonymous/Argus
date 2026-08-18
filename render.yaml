@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Render blueprint - deploys the full Argus stack (API + dashboard).
+#
+#   1. Push this repo to GitHub.
+#   2. Render dashboard -> New -> Blueprint -> pick the repo.
+#   3. Set ARGUS_ADMIN_PASSWORD when prompted (the rest is generated/defaulted).
+#
+# Why a Docker runtime and not Render's native Python env: Argus needs OpenCV's
+# system libraries (libGL, libglib) which the native environment does not
+# provide, and the dashboard has to be built with Node in the same deploy. The
+# Dockerfile already does both.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: argus
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: standard   # 2 GB RAM. 'starter' (512 MB) cannot load YOLOv8 + torch.
+    healthCheckPath: /api/v1/health
+
+    # Argus keeps camera state, tracker state and pre-event frame buffers in
+    # memory and writes to SQLite on a single disk. Two instances would each
+    # run their own retention scheduler over the same volume.
+    numInstances: 1
+
+    disk:
+      name: argus-data
+      # Must match ARGUS_DATA_DIR below. Without a disk, Render's filesystem is
+      # ephemeral: the database, users, snapshots and clips are wiped on every
+      # deploy and every restart.
+      mountPath: /var/lib/argus
+      sizeGB: 10
+
+    envVars:
+      - key: ARGUS_DATA_DIR
+        value: /var/lib/argus
+
+      # Generated once by Render and kept stable across deploys. A rotating
+      # secret would sign out every operator on each release.
+      - key: ARGUS_JWT_SECRET
+        generateValue: true
+
+      # Prompted at deploy time, never stored in git. Applied only while the
+      # admin account still has its default password.
+      - key: ARGUS_ADMIN_PASSWORD
+        sync: false
+
+      # Same-origin deployment: the API serves the dashboard, so the browser
+      # never makes a cross-origin request and no CORS entry is needed.
+      - key: ARGUS_CORS_ORIGINS
+        value: ""
+
+      - key: ARGUS_LOG_FORMAT
+        value: json
+      - key: ARGUS_LOG_LEVEL
+        value: INFO
+
+      # Ultralytics writes its config/weights cache here; the default ($HOME)
+      # is not writable for the non-root user on a read-only image layer.
+      - key: YOLO_CONFIG_DIR
+        value: /var/lib/argus/.ultralytics

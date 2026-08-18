@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Argus - production compose (single image, API + dashboard).
+#
+#   cp .env.example .env      # then set ARGUS_JWT_SECRET and ARGUS_ADMIN_PASSWORD
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Open http://localhost:8000 and sign in.
+#
+# This is the "any machine with Docker" path: a VPS, a homelab box, an on-prem
+# server, an EC2 instance. It differs from docker-compose.yml (the development
+# stack) by running one prebuilt image instead of separate backend/frontend
+# containers, and by not starting Kafka/Qdrant, which nothing in the default
+# pipeline requires.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  argus:
+    # Build locally, or pull the published image instead:
+    #   image: ghcr.io/OWNER/argus:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: argus:latest
+    container_name: argus
+    restart: unless-stopped
+
+    ports:
+      - "${ARGUS_BIND:-127.0.0.1}:8000:8000"
+
+    environment:
+      # Fail fast rather than start with an ephemeral key that silently signs
+      # everyone out on restart.
+      ARGUS_JWT_SECRET: "${ARGUS_JWT_SECRET:?set ARGUS_JWT_SECRET in .env - generate one with openssl rand -base64 48}"
+      ARGUS_ADMIN_PASSWORD: ${ARGUS_ADMIN_PASSWORD:-}
+      ARGUS_DATA_DIR: /app/data
+      YOLO_CONFIG_DIR: /app/data/.ultralytics
+      ARGUS_LOG_FORMAT: ${ARGUS_LOG_FORMAT:-json}
+      ARGUS_LOG_LEVEL: ${ARGUS_LOG_LEVEL:-INFO}
+      # Same-origin by default: the API serves the dashboard. Only set this if
+      # you host the UI separately (e.g. on Vercel).
+      ARGUS_CORS_ORIGINS: ${ARGUS_CORS_ORIGINS:-}
+
+    volumes:
+      # Named volume, not a bind mount: survives `down`, `pull` and image
+      # rebuilds. Everything mutable (SQLite DB, snapshots, evidence clips,
+      # model cache) lives here.
+      - argus-data:/app/data
+      # Config is read-only at runtime; edit on the host and restart.
+      - ./config:/app/config:ro
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Cold start imports torch and loads the detector.
+      start_period: 90s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+    # Detection is CPU-bound; without this a busy pipeline can starve the host.
+    cpus: 2.0
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  argus-data:
