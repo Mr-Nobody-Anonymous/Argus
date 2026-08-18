@@ -483,11 +483,47 @@ Field notes: the class label key is **`class`** (not `class_name`), `bbox` is an
 
 ---
 
+## 🖥️ Operator dashboard
+
+The default screen is a **command center**: a live video wall with detection
+overlays, an alert feed, and — deliberately — the state of the things that
+silently fail.
+
+* **Video wall.** Frames arrive over the documented WebSocket protocol and
+  detections are drawn client-side as corner brackets with track ID and
+  confidence. Brackets occlude far less of a subject than full rectangles,
+  which matters when the operator is trying to identify the person inside the
+  box. Overlay geometry accounts for letterboxing: the frame is rendered with
+  `object-fit: contain`, so scaling by the element size would smear every box
+  across the black bars.
+* **Liveness is measured, not assumed.** A stalled camera holds its socket open
+  indefinitely, so an open connection proves nothing. Each tile runs its own
+  frame clock and degrades `LIVE → STALE → NO SIGNAL`, rather than showing an
+  old picture labelled live.
+* **Failure never renders as zero.** When a poll fails the panel keeps its last
+  known value and marks itself stale. A surveillance dashboard that prints
+  "0 events" after a failed request is actively dangerous — the operator reads
+  it as "nothing happened".
+* **Delivery state is on screen.** If no alert channel can deliver, a banner
+  says so. Argus spent its whole history recording events and sending them
+  nowhere; that failure mode is now impossible to miss.
+* **Evidence is fetched with credentials.** Snapshots and clips are
+  role-protected, and neither `<img src>` nor `<video src>` can carry a bearer
+  token, so both are fetched through the authenticated client and played from
+  object URLs.
+
+Run it with `python argus.py start` (builds the UI and serves it from the API
+on port 8000), or `npm run dev` in `frontend/` for hot reload on port 3000.
+
+---
+
 ## 📊 API Reference
 
-**73 addressable operations**: 69 registered routes (62 under `/api/v1`, plus
+**72 addressable operations**: 68 registered routes (62 under `/api/v1`, plus
 `GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
-`/metrics`), 3 streaming routes and 1 WebSocket route.
+`/metrics`), 3 streaming routes and 1 WebSocket route. `GET /` is excluded: it
+serves the dashboard when `frontend/dist` exists and a build hint when it does
+not, so it is not part of the API surface.
 
 Of the 62 `/api/v1` operations, **59 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
@@ -864,10 +900,15 @@ argus/
 │
 ├── frontend/
 │   ├── src/App.jsx                       # Shell + auth gate (login vs dashboard)
+│   ├── src/theme.js                      # Control-room design system; severity colours
+│   ├── src/pages/CommandCenter.jsx       # Video wall, alert feed, delivery + evidence state
 │   ├── src/pages/Login.jsx               # Login screen
-│   ├── src/pages/                        # SurveillanceDashboard, CameraManagement, EventFeed,
-│   │                                     #   AnalyticsDashboard, AdaptiveLearningDashboard
-│   ├── src/components/LiveVideoPlayer.jsx  # Canvas bbox/zone overlays over the WS stream
+│   ├── src/pages/                        # CameraManagement, EventFeed, AnalyticsDashboard,
+│   │                                     #   AdaptiveLearningDashboard, MemoryExplorer
+│   ├── src/components/CameraTile.jsx     # Live tile: WS frames + letterbox-correct overlays
+│   ├── src/components/ClipPlayer.jsx     # Authenticated pre-event clip playback
+│   ├── src/components/EvidenceImage.jsx  # Authenticated snapshot fetch
+│   ├── src/components/ui.jsx             # Panels, metrics, status dots
 │   └── src/services/api.js               # Axios client, token store, transparent refresh
 │
 ├── tests/

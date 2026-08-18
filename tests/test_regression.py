@@ -2850,13 +2850,23 @@ class TestDocumentedApiSurfaceMatchesReality:
     """Endpoint counts in the README must be introspected, never guessed."""
 
     def test_readme_route_counts_are_accurate(self):
+        """The documented API surface must match the code.
+
+        Counts the API only. `GET /` is deliberately excluded: it exists as a
+        route when the frontend is unbuilt and is replaced by a StaticFiles
+        mount once `frontend/dist` is present, so including it made this test
+        depend on whether the UI happened to be built - it passed in CI and
+        failed on a developer machine, or vice versa. The documented number
+        must describe the API, not the build state of the dashboard.
+        """
         from backend.api.main import app
         ops = set()
         for route in app.routes:
             methods = getattr(route, "methods", None)
-            if methods:
-                for m in methods - {"HEAD", "OPTIONS"}:
-                    ops.add((route.path, m))
+            if not methods or route.path == "/":
+                continue
+            for m in methods - {"HEAD", "OPTIONS"}:
+                ops.add((route.path, m))
         v1 = {o for o in ops if o[0].startswith("/api/v1")}
 
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
@@ -3786,4 +3796,120 @@ class TestEvidenceClips:
         assert source.count("self.evidence.record(") >= 2, (
             "a frame path does not fill the ring buffer, so events on that "
             "path can never have a clip"
+        )
+
+
+class TestVideoWallComponent:
+    """Guards on the live video tile.
+
+    These are source-level checks because the component is browser code with
+    no JS test runner in this repo. They are deliberately narrow: each one
+    pins a specific bug that was observed live, not a coding style.
+    """
+
+    TILE = PROJECT_ROOT / "frontend" / "src" / "components" / "CameraTile.jsx"
+
+    def _src(self):
+        assert self.TILE.is_file(), f"missing {self.TILE}"
+        return self.TILE.read_text(encoding="utf-8")
+
+    def test_websocket_effect_does_not_depend_on_the_draw_callback(self):
+        """The bug: the stream reconnected ~20 times a second.
+
+        `draw` is rebuilt by useCallback on every detection update. Listing it
+        in the transport effect's dependency array tore the WebSocket down and
+        rebuilt it on each repaint, so the socket almost never lived long
+        enough to deliver a frame - measured as 20+ 'WebSocket stream opened'
+        lines per second in the backend log, a blank overlay, and 4.4 fps
+        instead of 13.6.
+        """
+        src = self._src()
+        assert "}, [cameraId]);" in src, (
+            "the transport effect must depend on cameraId alone"
+        )
+        assert "}, [cameraId, draw]);" not in src, (
+            "transport effect depends on `draw`, which is recreated on every "
+            "detection update - this reconnects the WebSocket continuously"
+        )
+        # A ref must both exist and be kept current, otherwise the transport
+        # calls a draw closure captured on first render and overlays freeze.
+        assert "drawRef = useRef(" in src, (
+            "the transport must reach the latest draw through a ref rather "
+            "than by re-subscribing"
+        )
+        assert "drawRef.current = draw" in src, (
+            "the draw ref is never updated, so the transport would call a "
+            "stale closure from the first render"
+        )
+
+    def test_overlay_accounts_for_letterboxing(self):
+        """The bug: boxes were scaled by the element rect, not the image.
+
+        The frame is rendered with object-fit: contain, so a 640x480 frame in a
+        412x238 box is letterboxed. Scaling detections by the element size
+        stretched every box across the black bars and offset it from the
+        subject it was supposed to mark.
+        """
+        src = self._src()
+        assert "Math.min(rect.width / img.naturalWidth" in src, (
+            "overlay must derive a single contain-scale from both axes"
+        )
+        for token in ("const offX =", "const offY ="):
+            assert token in src, (
+                f"overlay must compute the letterbox margin ({token!r} missing)"
+            )
+        # The margins must actually be applied to the drawn coordinates, not
+        # merely computed: mapping helpers are the only consumers.
+        assert "offX + v * scale" in src and "offY + v * scale" in src, (
+            "letterbox offsets are computed but never applied to coordinates"
+        )
+
+    def test_liveness_is_measured_not_inferred_from_socket_state(self):
+        """An open socket does not mean frames are arriving.
+
+        A stalled camera holds the connection open indefinitely; without a
+        frame clock the tile would keep showing an old picture labelled LIVE.
+        """
+        src = self._src()
+        assert "STALE_AFTER_MS" in src and "OFFLINE_AFTER_MS" in src, (
+            "tile must degrade LIVE -> STALE -> OFFLINE on its own frame clock"
+        )
+        assert "lastFrameAt" in src, "tile must track when the last frame arrived"
+
+    def test_reconnect_backs_off(self):
+        """A fixed retry from every tile is a request flood against a down backend."""
+        src = self._src()
+        assert "retryRef" in src and "Math.min" in src, (
+            "reconnect must back off rather than hammer a fixed interval"
+        )
+
+
+class TestProtectedEvidenceIsFetchedWithAuth:
+    """Snapshots and clips are role-protected; <img>/<video> cannot carry a token."""
+
+    SRC = PROJECT_ROOT / "frontend" / "src"
+
+    def test_snapshots_are_not_requested_from_the_unauthenticated_mount(self):
+        """The bug: a broken image icon sat next to real evidence.
+
+        /snapshots is only mounted when auth is disabled. The event dialog
+        pointed <img src="/snapshots/{file}"> at it, which 404s on every
+        authenticated deployment. The real route is
+        GET /api/snapshots/{camera_id}/{filename}.
+        """
+        feed = (self.SRC / "pages" / "EventFeed.jsx").read_text(encoding="utf-8")
+        assert 'src={`/snapshots/' not in feed, (
+            "event dialog requests the unauthenticated /snapshots mount, "
+            "which 404s whenever auth is enabled"
+        )
+        api = (self.SRC / "services" / "api.js").read_text(encoding="utf-8")
+        assert "snapshotAPI" in api and "/snapshots/${cameraId}/" in api, (
+            "no authenticated snapshot fetch exists"
+        )
+
+    def test_clip_endpoint_is_fetched_as_an_authenticated_blob(self):
+        api = (self.SRC / "services" / "api.js").read_text(encoding="utf-8")
+        assert "fetchClip" in api and "responseType: 'blob'" in api, (
+            "clips must be fetched through the authenticated client, not a "
+            "bare <video src> which cannot send a bearer token"
         )

@@ -169,6 +169,40 @@ export const capabilityAPI = {
     promotion: () => api.get('/observations/promotion'),
 };
 
+// Alert delivery. Argus recorded events and delivered them nowhere for its
+// entire history, so the UI must be able to show whether any channel can
+// actually send right now - availability is probed, not read from config.
+export const alertAPI = {
+    status: () => api.get('/notifications/status'),
+    test: () => api.post('/notifications/test'),
+};
+
+// Snapshots. These are event evidence containing identifiable people, so the
+// route is role-protected: GET /api/snapshots/{camera_id}/{filename}. Note it
+// sits under /api, NOT /api/v1, so it cannot use the shared axios baseURL.
+export const snapshotAPI = {
+    fetch: async (cameraId, filename) => {
+        const res = await api.get(
+            `/snapshots/${cameraId}/${encodeURIComponent(filename)}`,
+            { baseURL: '/api', responseType: 'blob' },
+        );
+        return URL.createObjectURL(res.data);
+    },
+};
+
+// Pre-event video evidence.
+export const evidenceAPI = {
+    status: () => api.get('/evidence/status'),
+    // The clip route requires a bearer token, and a <video src> attribute
+    // cannot carry an Authorization header. Fetch it through axios (which the
+    // interceptor authenticates and refreshes) and hand back an object URL.
+    // The caller owns the URL and must revoke it.
+    fetchClip: async (eventId) => {
+        const res = await api.get(`/events/${eventId}/clip`, { responseType: 'blob' });
+        return URL.createObjectURL(res.data);
+    },
+};
+
 // System API
 export const systemAPI = {
     health: () => api.get('/health'),

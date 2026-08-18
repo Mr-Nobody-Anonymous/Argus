@@ -39,6 +39,8 @@ import {
     Search,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import ClipPlayer from '../components/ClipPlayer';
+import EvidenceImage from '../components/EvidenceImage';
 import { motion, AnimatePresence } from 'framer-motion';
 import { eventAPI, cameraAPI } from '../services/api';
 
@@ -328,16 +330,27 @@ export default function EventFeed() {
                     {selectedEvent && (
                         <Box>
                             <Grid container spacing={2}>
+                                {/* Snapshots are role-protected under /api/snapshots;
+                                    a bare <img src="/snapshots/..."> 404s whenever auth
+                                    is on, which showed a broken image beside real evidence. */}
                                 {selectedEvent.snapshot_path && (
                                     <Grid item xs={12}>
-                                        <Box
-                                            component="img"
-                                            src={`/snapshots/${selectedEvent.snapshot_path.split(/[\\/]/)[selectedEvent.snapshot_path.split(/[\\/]/).length - 1]}`}
-                                            alt="Event snapshot"
-                                            sx={{ width: '100%', borderRadius: 1 }}
+                                        <EvidenceImage
+                                            snapshotPath={selectedEvent.snapshot_path}
+                                            cameraId={selectedEvent.camera_id}
                                         />
                                     </Grid>
                                 )}
+
+                                {/* A snapshot is the instant the rule fired; the clip
+                                    shows the approach, which is usually what an
+                                    investigator actually needs. */}
+                                <Grid item xs={12}>
+                                    <ClipPlayer
+                                        eventId={selectedEvent.id}
+                                        ruleType={selectedEvent.rule_type}
+                                    />
+                                </Grid>
 
                                 {[
                                     { label: 'Event ID', value: selectedEvent.id },
