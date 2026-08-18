@@ -3163,9 +3163,32 @@ class TestEventLifecycle:
 
         return get_event_store()
 
+    @staticmethod
+    def _camera_id():
+        """A camera that definitely exists.
+
+        Hardcoding camera_id=2 passed locally and failed on a fresh clone:
+        events.camera_id is a foreign key, and a newly initialised database has
+        no cameras at all. A test that depends on data it did not create is
+        testing the developer's machine.
+        """
+        from backend.database.db import get_db
+
+        db = get_db()
+        rows = db.fetchall("SELECT id FROM cameras LIMIT 1")
+        if rows:
+            row = rows[0]
+            return row["id"] if isinstance(row, dict) else row[0]
+        cursor = db.execute(
+            "INSERT INTO cameras (name, rtsp_url, status) VALUES (?, ?, ?)",
+            ("lifecycle-test-camera", "data/demo_clip.mp4", "inactive"),
+        )
+        return cursor.lastrowid
+
     def _event(self):
         return self._store().create_event(
-            camera_id=2, rule_type="dwell", confidence=0.5, priority="low"
+            camera_id=self._camera_id(), rule_type="dwell",
+            confidence=0.5, priority="low",
         )
 
     def test_new_events_start_in_a_known_state(self):
