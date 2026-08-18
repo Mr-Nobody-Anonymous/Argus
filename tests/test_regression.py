@@ -966,3 +966,219 @@ class TestSinglePortDashboard:
         """A source checkout with no build must still boot as an API."""
         src = (PROJECT_ROOT / "backend" / "api" / "main.py").read_text(encoding="utf-8")
         assert "_ui_is_built()" in src, "no guard for a missing frontend build"
+
+
+class TestCanonicalPerceptionModel:
+    """The perception layer must stay joinable, honest and dependency-free."""
+
+    def test_importable_without_any_ml_dependency(self):
+        """It must load on a box with no torch/cv2 so schema tests run anywhere.
+
+        Implemented by blocking the imports outright rather than trusting that
+        none crept in: a transitive import is easy to add and invisible in review.
+        """
+        import subprocess
+
+        code = (
+            "import sys\n"
+            "BLOCKED={'torch','cv2','ultralytics','numpy','sklearn','scipy','onnxruntime','PIL'}\n"
+            "class B:\n"
+            "    def find_module(self,n,p=None):\n"
+            "        return self if n.split('.')[0] in BLOCKED else None\n"
+            "    def load_module(self,n):\n"
+            "        raise ImportError('blocked '+n)\n"
+            "sys.meta_path.insert(0,B())\n"
+            "from backend.services.perception import Scene, scene_from_detections\n"
+            "s=scene_from_detections(1,[{'class_name':'person','confidence':0.9,"
+            "'bbox':[0,0,10,20]}])\n"
+            "assert len(s.entities)==1\n"
+            "print('ok')\n"
+        )
+        p = subprocess.run([sys.executable, "-c", code], cwd=str(PROJECT_ROOT),
+                           capture_output=True, text=True, timeout=120)
+        assert p.returncode == 0, f"perception layer needs an ML dep:\n{p.stderr[-800:]}"
+
+    def test_real_detector_output_converts_losslessly(self):
+        """Guards the adapter against the detector's actual dict shape."""
+        from backend.services.perception import scene_from_detections
+
+        dets = [
+            {"class_id": 0, "class_name": "person", "confidence": 0.84,
+             "bbox": [61, 1, 129, 147]},
+            {"class_id": 2, "class_name": "car", "confidence": 0.71,
+             "bbox": [300, 120, 520, 260]},
+        ]
+        scene = scene_from_detections(camera_id=2, detections=dets)
+        assert len(scene.entities) == len(dets)
+        assert len(scene.of_kind("person")) == 1
+        assert len(scene.of_kind("vehicle")) == 1
+        assert scene.entities[0].bbox.to_list() == [61.0, 1.0, 129.0, 147.0]
+
+    def test_malformed_detection_is_skipped_not_fatal(self):
+        """One bad box must never take down a frame."""
+        from backend.services.perception import scene_from_detections
+
+        dets = [
+            {"class_name": "person", "confidence": 0.9, "bbox": [0, 0, 10, 20]},
+            {"class_name": "ghost", "confidence": 0.5, "bbox": None},
+            {"class_name": "broken", "confidence": 0.5, "bbox": [1, 2]},
+            {"class_name": "zero_area", "confidence": 0.5, "bbox": [5, 5, 5, 5]},
+            "not even a dict",
+        ]
+        scene = scene_from_detections(camera_id=1, detections=dets)
+        assert len(scene.entities) == 1, "only the valid detection should survive"
+
+    def test_better_sourced_claim_wins_regardless_of_confidence(self):
+        """Raw confidence is not comparable across models.
+
+        A specialised reader at 0.55 must beat a generic detector at 0.99, or
+        every fusion decision becomes a coin toss between uncalibrated numbers.
+        """
+        from backend.services.perception import Entity, EntityKind, Source
+
+        car = Entity(kind=EntityKind.VEHICLE.value, category="car",
+                     bbox=[0, 0, 10, 10])
+        car.set_attribute("plate", "GUESS99", 0.99, Source.DETECTOR.value)
+        car.set_attribute("plate", "AA12BC", 0.55, Source.LPR.value)
+        assert car.get("plate") == "AA12BC"
+
+        # ...and a human overrides even the specialist.
+        car.set_attribute("plate", "AA12BD", 0.30, Source.HUMAN.value)
+        assert car.get("plate") == "AA12BD"
+
+    def test_weaker_source_cannot_overwrite_stronger(self):
+        from backend.services.perception import Entity, Source
+
+        person = Entity(kind="person", category="person", bbox=[0, 0, 10, 10])
+        person.set_attribute("identity", "Alice", 0.8, Source.FACE.value)
+        person.set_attribute("identity", "Bob", 0.95, Source.APPEARANCE.value)
+        assert person.get("identity") == "Alice", "appearance must not beat a face match"
+
+    def test_unobserved_is_distinct_from_absent(self):
+        """The single most dangerous confusion in a perception system."""
+        from backend.services.perception import Entity
+
+        person = Entity(kind="person", category="person", bbox=[0, 0, 10, 10])
+        assert person.observed("carrying_bag") is False
+        assert person.get("carrying_bag") is None
+
+        person.set_attribute("carrying_bag", False, 0.9, "detector")
+        assert person.observed("carrying_bag") is True
+        assert person.get("carrying_bag") is False
+
+    def test_confidence_is_clamped(self):
+        from backend.services.perception import Attribute, Entity
+
+        assert Attribute("x", 1, confidence=5.0).confidence == 1.0
+        assert Attribute("x", 1, confidence=-2.0).confidence == 0.0
+        assert Entity(confidence=99).confidence == 1.0
+
+    def test_scene_round_trips_through_dict(self):
+        """It has to survive a database or a queue without losing provenance."""
+        from backend.services.perception import (
+            Scene, Source, scene_from_detections, infer_spatial_relationships)
+
+        scene = scene_from_detections(2, [
+            {"class_name": "person", "confidence": 0.9,
+             "bbox": [100, 100, 150, 300], "track_id": 7},
+            {"class_name": "car", "confidence": 0.8, "bbox": [200, 180, 400, 320]},
+        ])
+        scene.entities[0].set_attribute("posture", "walking", 0.7, Source.POSE.value)
+        scene.set_environment("lighting", "daylight", 0.8)
+        infer_spatial_relationships(scene)
+
+        restored = Scene.from_dict(scene.to_dict())
+        assert restored.to_dict() == scene.to_dict()
+        assert restored.by_track(7) is not None
+        attr = restored.by_track(7).get_attribute("posture")
+        assert attr.source == Source.POSE.value and attr.confidence == 0.7
+
+    def test_plate_attaches_to_the_vehicle_not_a_loose_row(self):
+        from backend.services.perception import attach_plate, scene_from_detections
+
+        scene = scene_from_detections(1, [
+            {"class_name": "car", "confidence": 0.8, "bbox": [200, 180, 400, 320],
+             "track_id": 3},
+            {"class_name": "person", "confidence": 0.9, "bbox": [10, 10, 40, 90]},
+        ])
+        hit = attach_plate(scene, "AA12BC", [280, 280, 340, 305], 0.7)
+        assert hit is not None and hit.track_id == 3
+        assert scene.by_track(3).get("plate") == "AA12BC"
+
+    def test_plate_with_no_matching_vehicle_is_dropped(self):
+        """Better to lose a reading than bind it to the wrong car."""
+        from backend.services.perception import attach_plate, scene_from_detections
+
+        scene = scene_from_detections(1, [
+            {"class_name": "car", "confidence": 0.8, "bbox": [0, 0, 50, 50]},
+        ])
+        assert attach_plate(scene, "ZZ99ZZ", [900, 900, 950, 920]) is None
+
+    def test_carrying_requires_containment_not_mere_overlap(self):
+        from backend.services.perception import (
+            infer_spatial_relationships, scene_from_detections)
+
+        scene = scene_from_detections(1, [
+            {"class_name": "person", "confidence": 0.9, "bbox": [100, 100, 200, 400]},
+            {"class_name": "handbag", "confidence": 0.6, "bbox": [120, 200, 160, 260]},
+            {"class_name": "handbag", "confidence": 0.6, "bbox": [600, 200, 640, 260]},
+        ])
+        rels = infer_spatial_relationships(scene)
+        carrying = [r for r in rels if r.predicate == "carrying"]
+        assert len(carrying) == 1, "only the contained bag is carried"
+
+    def test_proximity_scales_with_subject_size(self):
+        """A fixed pixel radius means different real distances at different depths."""
+        from backend.services.perception import (
+            infer_spatial_relationships, scene_from_detections)
+
+        # Small (distant) person, vehicle 100 px away -> too far.
+        far = scene_from_detections(1, [
+            {"class_name": "person", "confidence": 0.9, "bbox": [0, 0, 10, 30]},
+            {"class_name": "car", "confidence": 0.8, "bbox": [100, 0, 160, 40]},
+        ])
+        # Large (near) person, same 100 px -> within reach.
+        near = scene_from_detections(1, [
+            {"class_name": "person", "confidence": 0.9, "bbox": [0, 0, 60, 300]},
+            {"class_name": "car", "confidence": 0.8, "bbox": [100, 0, 300, 300]},
+        ])
+        assert not [r for r in infer_spatial_relationships(far) if r.predicate == "near"]
+        assert [r for r in infer_spatial_relationships(near) if r.predicate == "near"]
+
+    def test_relationship_carries_its_evidence(self):
+        """A claim with no evidence cannot be reviewed or disputed."""
+        from backend.services.perception import (
+            infer_spatial_relationships, scene_from_detections)
+
+        scene = scene_from_detections(1, [
+            {"class_name": "person", "confidence": 0.9, "bbox": [0, 0, 60, 300]},
+            {"class_name": "car", "confidence": 0.8, "bbox": [100, 0, 300, 300]},
+        ])
+        for rel in infer_spatial_relationships(scene):
+            assert rel.evidence, f"{rel.predicate} has no evidence"
+            assert rel.confidence <= 0.9, "geometry alone must not be near-certain"
+
+    def test_observation_needs_evidence_to_be_actionable(self):
+        from backend.services.perception import Observation
+
+        bare = Observation(kind="loitering", summary="person loitering",
+                           confidence=0.95)
+        assert not bare.is_actionable, "a confident claim with no evidence is not actionable"
+
+        backed = Observation(kind="loitering", summary="person loitering",
+                             confidence=0.6, evidence=["dwell 143s", "zone B"])
+        assert backed.is_actionable
+
+    def test_bbox_accepts_every_shape_already_in_the_codebase(self):
+        from backend.services.perception import BBox
+
+        expected = [1.0, 2.0, 3.0, 4.0]
+        assert BBox.from_any([1, 2, 3, 4]).to_list() == expected
+        assert BBox.from_any((1, 2, 3, 4)).to_list() == expected
+        assert BBox.from_any({"x1": 1, "y1": 2, "x2": 3, "y2": 4}).to_list() == expected
+        assert BBox.from_any({"x": 1, "y": 2, "w": 2, "h": 2}).to_list() == expected
+        assert BBox.from_any("[1, 2, 3, 4]").to_list() == expected
+        assert BBox.from_any(None) is None
+        assert BBox.from_any("garbage") is None
+        # Inverted corners are normalised, not left to produce negative area.
+        assert BBox.from_any([3, 4, 1, 2]).area == 4.0

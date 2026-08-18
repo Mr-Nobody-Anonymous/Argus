@@ -27,6 +27,7 @@ This document provides a comprehensive overview of the Argus AI Video Analytics 
 | `.env.example` | Every `ARGUS_*` environment variable with an explanatory comment |
 | `package.json` | Root-level workspace pointer (frontend is in `frontend/`) |
 | `package-lock.json` | Root dependency lock |
+| `backend/services/perception/` | **Canonical perception model** — Scene/Entity/Attribute/Relationship/Observation plus adapters from the existing detectors. Stdlib-only, so it imports without torch or a GPU |
 | `argus.py` | **One-command launcher** — sets up and runs everything on any OS (`start` / `stop` / `status` / `doctor` / `reset`). Stdlib-only by design |
 | `start.bat` / `stop.bat` | Windows double-click wrappers around `argus.py` |
 | `start.command` / `stop.command` | macOS/Linux double-click wrappers |

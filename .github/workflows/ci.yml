@@ -117,6 +117,41 @@ jobs:
           print("OK - every declared dependency is imported or justified")
           PY
 
+      - name: Perception layer must stay dependency-free
+        # It is the schema every analyser writes into, so it has to import on a
+        # machine with no GPU, no weights and no torch. A transitive ML import
+        # is easy to add by accident and invisible in review.
+        run: |
+          python <<'PY'
+          import ast, pathlib, sys
+
+          stdlib = set(sys.stdlib_module_names)
+          local = {"backend"}
+          offenders = {}
+          for path in sorted(pathlib.Path("backend/services/perception").glob("*.py")):
+              roots = set()
+              for node in ast.walk(ast.parse(path.read_text())):
+                  if isinstance(node, ast.Import):
+                      for a in node.names:
+                          roots.add(a.name.split(".")[0])
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.module and node.level == 0:
+                          roots.add(node.module.split(".")[0])
+              external = sorted(
+                  r for r in roots
+                  if r and not r.startswith("_") and r not in stdlib and r not in local
+              )
+              if external:
+                  offenders[path.name] = external
+
+          if offenders:
+              for name, mods in offenders.items():
+                  print(f"::error file=backend/services/perception/{name}::"
+                        f"non-stdlib import(s): {', '.join(mods)}")
+              sys.exit(1)
+          print("perception layer imports only the standard library")
+          PY
+
       - name: Validate YAML config and compose files
         run: |
           pip install pyyaml
