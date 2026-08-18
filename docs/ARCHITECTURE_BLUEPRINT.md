@@ -22,7 +22,7 @@ IP Cameras/RSTP Streams → MediaMTX (RTSP Server) → FFmpeg Capture → Frame 
 ### Components Created:
 - `docker-compose.mediamtx.yml` - Docker orchestration for all services
 - `mediamtx/config.yml` - RTSP/WebRTC/HLS server configuration  
-- `backend/services/multistream_pipeline.py` - FFmpeg-based frame capture with adaptive skipping
+- `backend/services/core_engine/multistream_pipeline.py` - FFmpeg-based frame capture with adaptive skipping
 
 ### Key Features:
 - Zero-copy frame extraction via FFmpeg subprocess
@@ -46,7 +46,7 @@ uvicorn backend.api.main:app --reload
 
 ## 2. AI MODEL INTEGRATION (YOLOv8 + ByteTrack + ANPR)
 
-### Component: `backend/services/object_detection_tracker.py`
+### Component: `backend/services/core_engine/object_detection_tracker.py`
 
 ### YOLOv8 Configuration:
 ```python

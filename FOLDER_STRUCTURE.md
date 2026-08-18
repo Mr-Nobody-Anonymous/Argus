@@ -217,7 +217,7 @@ Django URL routing — includes admin site and REST framework URLs.
 | File | Description |
 |------|-------------|
 | `yolov8n.pt` | YOLOv8 nano model (~6.3M params) — lightweight, good for CPU |
-| `yolov8m.pt` | YOLOv8 medium model (~25.9M params) — more accurate, GPU recommended |
+| `yolov8m.pt` | *Not bundled.* YOLOv8 medium (~25.9M params) — more accurate, GPU recommended. Download it into this directory and set `detection.model` to use it |
 
 ---
 
@@ -307,6 +307,8 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 | 2 | `zone_manager.py` | **Zone CRUD + geometry checking.** `create_zone()` validates polygon (≥3 points) / rectangle (2 points). Uses Shapely for `is_point_in_zone()` — point-in-polygon via `Polygon.contains(Point)`, rectangle via min/max bounds. Coordinates stored as JSON. |
 | 3 | `zone_alerts.py` | **Virtual tripwire and geofence monitoring.** `check_zone_crossings()` runs each detection against loaded zones. Supports line (tripwire crossing), polygon (enter/exit), and intrusion (dwell time >30s) zone types. **Now fully compatible with both legacy `Detection` dataclass objects and swarm dict format** via 5 helper functions: `_get_center_from_dict_or_obj()`, `_get_track_id_from_dict_or_obj()`, `_get_class_name_from_dict_or_obj()`, `_get_confidence_from_dict_or_obj()`, `_get_bbox_from_dict_or_obj()`. Uses ray casting for `_point_in_polygon()` and cross-product for `_line_intersection()`. |
 | 4 | `rules_engine.py` | **Zone-based event generation.** `process_detections()` checks each detection against zones for **intrusion** (object enters a restricted zone → high-priority event + snapshot) and **loitering** (person dwells past the threshold → medium-priority event). Both key on the tracker's **persistent track ID**; the previous 50px grid-cell key made every occupied cell its own "subject" while anyone walking between cells never accumulated dwell time. The dedup window **slides** while a condition persists, so an ongoing situation produces one event and re-arms only after real absence (this took a single camera from 209 events per 2 minutes to 108). Saves snapshots with bbox overlay to `data/snapshots/`. |
+| `observation_events.py` | Promotes actionable perception observations into the operator event feed, carrying their evidence. Declares a policy per observation kind; bookkeeping kinds are suppressed but stay queryable |
+| `calibration.py` | Per-camera ground-plane calibration. A camera with no entry is explicitly uncalibrated, and `speed_violation` declines to fire rather than convert pixels to km/h with a guess |
 | 5 | `event_store.py` | **Event storage and querying.** `create_event()` → INSERT + return with ID. `query_events()` supports filtering by camera_id, time range, rule_type, priority, status, with pagination. `get_event_stats()` returns counts by rule type and priority for last N hours. 30-day retention policy via `delete_old_events()`. |
 | 6 | `mqtt_publisher.py` | **MQTT event publishing.** Uses `paho-mqtt` with async loop. `publish_event(event)` → JSON payload to `argus/events/{camera_id}/{rule_type}`. `publish_camera_status()` → status updates on `argus/status/{camera_id}`. Automatic reconnect with logging. |
 | 7 | `stream_ingestion.py` | **RTSP/webcam stream ingestion.** `_capture_loop()` runs in daemon thread per camera with cv2.VideoCapture. Exponential backoff on failure (up to 10 retries, max 60s wait). Frame queue with maxsize=100 — drops oldest frame if full (prevents memory leak). FPS tracking from last 30 frames. Supports `webcam://{index}` URLs for local camera testing. |
@@ -319,9 +321,11 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 
 ---
 
-### `backend/services/legacy/` — Legacy Code
+### Legacy code
 
-Empty directory — placeholder for legacy code migration from previous versions.
+There is no `backend/services/legacy/` directory. Pre-restructure modules were
+moved into `core_engine/`, `analytics/`, `vision/`, `management/` and
+`perception/` rather than parked in a legacy folder.
 
 ---
 
@@ -411,6 +415,7 @@ Typed endpoint exports:
 | `EventFeed.jsx` | Event feed with filtering by type, priority, camera; severity indicators (high=red, medium=yellow, low=green); timestamp display |
 | `AnalyticsDashboard.jsx` | Charts and trends — event counts over time, detection class distribution, FPS timeline, heatmap |
 | `AdaptiveLearningDashboard.jsx` | AI evolution metrics — fitness over generations, gene vector history, agent status |
+| `MemoryExplorer.jsx` | Search stored observations with their evidence; surfaces any rule that cannot fire on this host |
 
 ### `frontend/public/` — Static Assets
 
@@ -523,9 +528,9 @@ Typed endpoint exports:
 | `data/argus.db` | SQLite database — Argus tables (cameras, zones, events, behavior_profiles, anomalies, license_plates), the `audit_log` table, and Django's `auth_*` tables (the single source of user identity) |
 | `data/demo_clip.mp4` | Bundled 10-second demo clip (150 frames @ 15 fps). Point a camera at it to exercise the full pipeline without an RTSP source — file sources are paced to their native FPS and loop on EOF |
 | `data/known_faces/` | Reference face images for face recognition (PNG/JPG, one per known person) |
-| `data/qdrant/` | Qdrant vector database persistent storage |
-| `data/kafka/` | Kafka log data (when running Kafka without Docker) |
-| `data/streams/` | MediaMTX stream cache (HLS segments, recordings) |
+| `data/qdrant/` | *Created only when a Qdrant server runs.* Vector storage defaults to SQLite inside `argus.db`; Qdrant is used only if a live `try_connect()` probe succeeds |
+| `data/kafka/` | *Created only when Kafka runs outside Docker.* Not required for single-node operation |
+| `data/streams/` | *Created only when MediaMTX runs.* HLS segments and recordings |
 
 ---
 

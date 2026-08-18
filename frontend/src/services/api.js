@@ -148,6 +148,25 @@ export const eventAPI = {
     getAll: (params) => api.get('/events', { params }),
     getById: (id) => api.get(`/events/${id}`),
     getStats: (params) => api.get('/events/stats', { params }),
+    // Lifecycle: detected -> open -> acknowledged -> resolved.
+    updateStatus: (id, status) => api.patch(`/events/${id}/status`, { status }),
+    lifecycle: () => api.get('/events/lifecycle'),
+};
+
+// Perception memory: durable observations and appearance search.
+export const memoryAPI = {
+    recall: (params) => api.get('/memory/recall', { params }),
+    summary: (params) => api.get('/memory/summary', { params }),
+    similar: (cameraId, trackId, limit) =>
+        api.get(`/memory/appearances/${cameraId}/${trackId}/similar`, { params: { limit } }),
+    stats: () => api.get('/memory/stats'),
+};
+
+// What Argus can actually do here, as opposed to what config claims.
+export const capabilityAPI = {
+    rules: () => api.get('/rules/status'),
+    calibration: () => api.get('/rules/calibration'),
+    promotion: () => api.get('/observations/promotion'),
 };
 
 // System API

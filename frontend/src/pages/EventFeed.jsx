@@ -97,6 +97,23 @@ export default function EventFeed() {
         }
     };
 
+    // Lifecycle actions. The backend enforces the transition table, so an
+    // illegal move returns 400 rather than silently corrupting the state.
+    const [lifecycleError, setLifecycleError] = useState(null);
+
+    const advanceEvent = async (event, status) => {
+        setLifecycleError(null);
+        try {
+            const res = await eventAPI.updateStatus(event.id, status);
+            setSelectedEvent(res.data.event);
+            loadEvents();
+        } catch (err) {
+            setLifecycleError(
+                err.response?.data?.detail || err.message || 'Update failed'
+            );
+        }
+    };
+
     const getPriorityColor = (priority) => {
         switch (priority) {
             case 'critical':
@@ -362,7 +379,37 @@ export default function EventFeed() {
                         </Box>
                     )}
                 </DialogContent>
-                <DialogActions>
+                <DialogActions sx={{ flexWrap: 'wrap', gap: 1 }}>
+                    {lifecycleError && (
+                        <Typography variant="caption" color="error" sx={{ mr: 'auto', ml: 1 }}>
+                            {lifecycleError}
+                        </Typography>
+                    )}
+                    {/* Only offer transitions the backend will accept. */}
+                    {['detected', 'open'].includes(selectedEvent?.status) && (
+                        <Button
+                            variant="outlined"
+                            onClick={() => advanceEvent(selectedEvent, 'acknowledged')}
+                        >
+                            Acknowledge
+                        </Button>
+                    )}
+                    {selectedEvent?.status === 'acknowledged' && (
+                        <Button
+                            variant="contained"
+                            onClick={() => advanceEvent(selectedEvent, 'resolved')}
+                        >
+                            Resolve
+                        </Button>
+                    )}
+                    {!['resolved', 'false_positive'].includes(selectedEvent?.status) && (
+                        <Button
+                            color="warning"
+                            onClick={() => advanceEvent(selectedEvent, 'false_positive')}
+                        >
+                            False positive
+                        </Button>
+                    )}
                     <Button onClick={() => setOpenDialog(false)}>Close</Button>
                 </DialogActions>
             </Dialog>

@@ -614,6 +614,15 @@ class TestZoneAlertsPayloadShapes:
         assert 1 not in za.zone_triggers, "evicted the wrong entry"
 
 
+def _snapshot_dir_config():
+    from backend.config.config import get_config
+    return get_config()
+
+
+# Captured once so _cleanup can restore whatever the real configuration was.
+_ORIGINAL_SNAPSHOT_DIR = None
+
+
 class TestSnapshotDiskCeiling:
     """Time-based retention cannot bound disk usage inside its own window.
 
@@ -636,16 +645,31 @@ class TestSnapshotDiskCeiling:
 
     @staticmethod
     def _dir():
-        from backend.config.config import resolve_path, get_config
-        d = resolve_path(get_config().system.snapshot_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        for stale in d.glob("cap_*.jpg"):
-            stale.unlink()
+        """An isolated snapshot directory for this test.
+
+        enforce_snapshot_size_cap() evicts every *.jpg under the configured
+        snapshot dir, not just this test's cap_*.jpg fixtures. Pointing the
+        test at the shared data/snapshots meant any real snapshot written by
+        the running pipeline - or by another test - was counted in the eviction
+        total and silently changed the result. The test failed only when the
+        directory happened to be non-empty, which is the worst kind of flake:
+        green on CI, red on a developer machine that has actually run Argus.
+        """
+        import tempfile
+        from pathlib import Path
+        global _ORIGINAL_SNAPSHOT_DIR
+        cfg = _snapshot_dir_config()
+        if _ORIGINAL_SNAPSHOT_DIR is None:
+            _ORIGINAL_SNAPSHOT_DIR = cfg.system.snapshot_dir
+        d = Path(tempfile.mkdtemp(prefix="argus_snapcap_"))
+        cfg.system.snapshot_dir = str(d)
         return d
 
     def _cleanup(self, d):
-        for f in d.glob("cap_*.jpg"):
-            f.unlink()
+        import shutil
+        if _ORIGINAL_SNAPSHOT_DIR is not None:
+            _snapshot_dir_config().system.snapshot_dir = _ORIGINAL_SNAPSHOT_DIR
+        shutil.rmtree(d, ignore_errors=True)
 
     def test_cap_evicts_oldest_until_under_budget(self):
         from backend.services.management.retention import enforce_snapshot_size_cap
@@ -2854,3 +2878,521 @@ class TestDocumentedApiSurfaceMatchesReality:
         assert f"**{total - public} require a token and {public} are public**" \
             in readme, (f"README must state {total - public} protected and "
                         f"{public} public /api/v1 operations")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Analysis coverage: everything presented to Argus must actually be analysed,
+# and anything it cannot analyse must say so rather than fail silently.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestConfiguredRulesAreImplemented:
+    """A rule declared `enabled: true` must have code behind it.
+
+    config.yaml advertised speed_violation, fall_detection and
+    abandoned_object as enabled while the engine implemented only intrusion
+    and loitering. Nothing warned; the three simply never fired. Configuration
+    that promises analysis nobody performs is indistinguishable from a working
+    system right up until the incident review.
+    """
+
+    def test_every_enabled_rule_is_implemented(self):
+        from backend.services.management.rules_engine import get_rules_engine
+
+        status = get_rules_engine().rule_status()
+        unimplemented = [
+            name for name, v in status.items()
+            if v["configured_enabled"] and not v["implemented"]
+        ]
+        assert not unimplemented, (
+            f"config.yaml enables rules with no implementation: {unimplemented}"
+        )
+
+    def test_rule_status_reports_blockers_rather_than_claiming_success(self):
+        from backend.services.management.rules_engine import get_rules_engine
+
+        status = get_rules_engine().rule_status()
+        for name, v in status.items():
+            if v["blockers"]:
+                assert not v["can_fire"], (
+                    f"{name} reports blockers {v['blockers']} yet claims it can fire"
+                )
+
+    def test_rule_config_keys_survive_parsing(self):
+        """Pydantic must not silently discard per-rule tuning keys.
+
+        RuleConfig was a closed model, so `classes`, `move_tolerance_px` and
+        friends were parsed, dropped, and replaced by hard-coded defaults with
+        no warning anywhere.
+        """
+        from backend.config.config import get_config, section_to_dict
+
+        rules = get_config().rules
+        abandoned = section_to_dict(rules.get("abandoned_object"))
+        assert abandoned.get("classes"), (
+            "abandoned_object.classes was dropped by the config parser"
+        )
+        speed = section_to_dict(rules.get("speed_violation"))
+        assert speed.get("violation_margin"), (
+            "speed_violation.violation_margin was dropped by the config parser"
+        )
+
+
+class TestSpeedRequiresCalibration:
+    """A speed in km/h must come from a measurement, not a global guess."""
+
+    @staticmethod
+    def _engine():
+        from backend.services.management.rules_engine import RulesEngine
+
+        engine = RulesEngine()
+        engine._created = []
+        engine.event_store = type(
+            "FakeStore", (),
+            {"create_event": lambda self, **kw: engine._created.append(kw)},
+        )()
+        engine.zone_manager.get_zones_by_camera = lambda cid: []
+        return engine
+
+    @staticmethod
+    def _drive(engine, camera_id, frames=6):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        for i in range(frames):
+            engine.process_detections(
+                camera_id, frame,
+                [{"class_name": "car", "confidence": 0.9,
+                  "bbox": [i * 60, 200, i * 60 + 50, 260], "track_id": 77}],
+                frame_time=1000.0 + i * 0.2,
+            )
+
+    def test_uncalibrated_camera_reports_no_speed(self):
+        engine = self._engine()
+        self._drive(engine, 1)
+        assert not [e for e in engine._created
+                    if e["rule_type"] == "speed_violation"], (
+            "reported a speed violation on a camera with no ground-plane "
+            "calibration - the km/h figure would be fabricated"
+        )
+
+    def test_calibrated_camera_reports_speed_with_evidence(self):
+        from backend.services.management.calibration import CameraCalibration
+
+        engine = self._engine()
+        engine.calibration._cache[2] = CameraCalibration(
+            2, meters_per_pixel=0.05, source="test"
+        )
+        self._drive(engine, 2)
+        events = [e for e in engine._created
+                  if e["rule_type"] == "speed_violation"]
+        assert events, "calibrated camera failed to report a clear violation"
+        meta = events[0]["metadata"]
+        assert meta["speed_kmh"] > meta["threshold_kmh"]
+        assert meta["meters_per_pixel"] == 0.05
+        assert any("m/px" in e for e in meta["evidence"]), (
+            "speed event must cite the calibration it relied on"
+        )
+
+
+class TestFallDetectionRefusesHeuristics:
+    """A medical alert must not come from a bounding-box aspect ratio."""
+
+    @staticmethod
+    def _engine():
+        from backend.services.management.rules_engine import RulesEngine
+
+        engine = RulesEngine()
+        engine._created = []
+        engine.event_store = type(
+            "FakeStore", (),
+            {"create_event": lambda self, **kw: engine._created.append(kw)},
+        )()
+        engine.zone_manager.get_zones_by_camera = lambda cid: []
+        return engine
+
+    def _fire(self, engine, keypoints):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        engine.process_detections(
+            1, frame,
+            [{"class_name": "person", "confidence": 0.9,
+              "bbox": [10, 10, 50, 120], "track_id": 4}],
+            pose_results=[{
+                "fall_detected": True, "num_keypoints": keypoints,
+                "pose_class": "lying", "track_id": 4,
+                "detection": [10, 10, 50, 120],
+            }],
+            frame_time=1000.0,
+        )
+        return [e for e in engine._created if e["rule_type"] == "fall_detection"]
+
+    def test_no_keypoints_means_no_alert(self):
+        assert not self._fire(self._engine(), 0), (
+            "raised a fall alert from the aspect-ratio fallback, which cannot "
+            "distinguish a fall from crouching or lying down"
+        )
+
+    def test_real_keypoints_raise_the_alert(self):
+        events = self._fire(self._engine(), 17)
+        assert events, "suppressed a fall backed by real pose keypoints"
+        assert events[0]["priority"] == "high"
+
+
+class TestAbandonmentNeedsAnAbsentOwner:
+    """detect_abandonment takes owner_gone as an input; something must supply it."""
+
+    @staticmethod
+    def _run(owner_leaves, track_id):
+        from backend.services.perception.pipeline import PerceptionPipeline
+
+        pipeline = PerceptionPipeline(enable_memory=False)
+        fired = []
+        t0 = 1000.0
+        for i in range(160):
+            ts = t0 + i * 0.5
+            dets = [{"class_name": "backpack", "confidence": 0.9,
+                     "bbox": [300, 300, 340, 350], "track_id": track_id}]
+            if (not owner_leaves) or ts < t0 + 5:
+                dets.append({"class_name": "person", "confidence": 0.9,
+                             "bbox": [300, 200, 350, 340],
+                             "track_id": track_id + 500})
+            for obs in pipeline.process(1, dets, frame=None,
+                                        timestamp=ts).observations:
+                if obs.kind == "abandoned_object":
+                    fired.append(obs)
+        return fired
+
+    def test_abandonment_fires_once_the_owner_has_gone(self):
+        fired = self._run(owner_leaves=True, track_id=1)
+        assert fired, (
+            "abandoned_object never fired: owner_gone was never computed, so "
+            "this check was dead code everywhere in the system"
+        )
+        assert fired[0].evidence, "abandonment claim carries no evidence"
+
+    def test_abandonment_stays_silent_while_the_owner_is_present(self):
+        assert not self._run(owner_leaves=False, track_id=2), (
+            "declared an object abandoned while its owner stood beside it"
+        )
+
+
+class TestObservationsReachOperators:
+    """Perception that never reaches the event feed is perception nobody sees."""
+
+    @staticmethod
+    def _bridge():
+        from backend.services.management.observation_events import (
+            ObservationEventBridge,
+        )
+
+        created = []
+        store = type("FakeStore", (),
+                     {"create_event": lambda self, **kw: created.append(kw) or kw})()
+        return ObservationEventBridge(event_store=store), created
+
+    @staticmethod
+    def _obs(kind="dwell", evidence=("duration 45s",), confidence=0.8, tracks=(7,)):
+        from backend.services.perception.observation import Observation, Source
+
+        return Observation(
+            kind=kind, summary="test observation", confidence=confidence,
+            source=Source.TEMPORAL.value, track_ids=list(tracks),
+            evidence=list(evidence),
+        )
+
+    def test_every_observation_kind_has_a_declared_policy(self):
+        """A new observation kind must not be silently dropped."""
+        import re
+
+        from backend.services.management.observation_events import KIND_POLICY
+
+        emitted = set()
+        for path in (PROJECT_ROOT / "backend/services/perception").glob("*.py"):
+            emitted |= set(
+                re.findall(r'kind="([a-z_]+)"', path.read_text(encoding="utf-8"))
+            )
+        missing = sorted(emitted - set(KIND_POLICY))
+        assert not missing, (
+            f"observation kinds with no event policy (silently dropped): {missing}"
+        )
+
+    def test_actionable_observation_becomes_an_event_with_its_evidence(self):
+        bridge, created = self._bridge()
+        bridge.promote(1, [self._obs()], frame=None)
+        assert len(created) == 1, "actionable observation never reached the feed"
+        assert created[0]["rule_type"] == "dwell"
+        assert created[0]["metadata"]["evidence"] == ["duration 45s"], (
+            "event dropped the evidence behind the claim"
+        )
+
+    def test_ungrounded_observation_is_never_promoted(self):
+        bridge, created = self._bridge()
+        bridge.promote(1, [self._obs(evidence=(), confidence=0.99)], frame=None)
+        assert not created, (
+            "promoted an observation with no evidence to an operator alert, "
+            "however confident it claimed to be"
+        )
+
+    def test_repeat_observations_do_not_flood_the_feed(self):
+        bridge, created = self._bridge()
+        obs = self._obs()
+        for _ in range(20):
+            bridge.promote(1, [obs], frame=None)
+        assert len(created) == 1, (
+            f"a persisting condition produced {len(created)} events"
+        )
+
+    def test_bookkeeping_kinds_stay_out_of_the_feed(self):
+        bridge, created = self._bridge()
+        bridge.promote(1, [self._obs(kind="object_appeared")], frame=None)
+        assert not created, "track bookkeeping was promoted to an operator alert"
+
+    def test_dedup_table_is_bounded(self):
+        bridge, _ = self._bridge()
+        for i in range(6000):
+            bridge.promote(1, [self._obs(tracks=(i,))], frame=None)
+        assert len(bridge._recent) <= bridge._max_keys, (
+            "dedup table grows without bound - one entry per track forever"
+        )
+
+
+class TestEventLifecycle:
+    """An alert nobody can prove was reviewed is not an audit trail."""
+
+    @staticmethod
+    def _store():
+        from backend.services.management.event_store import get_event_store
+
+        return get_event_store()
+
+    def _event(self):
+        return self._store().create_event(
+            camera_id=2, rule_type="dwell", confidence=0.5, priority="low"
+        )
+
+    def test_new_events_start_in_a_known_state(self):
+        from backend.services.management.event_store import EventStore
+
+        assert self._event()["status"] in EventStore.ALLOWED_TRANSITIONS
+
+    def test_acknowledgement_records_who_and_when(self):
+        store = self._store()
+        event = store.update_event_status(
+            self._event()["id"], "acknowledged", actor="tester"
+        )
+        assert event["acknowledged_by"] == "tester"
+        assert event["acknowledged_at"], "acknowledged without recording when"
+
+    def test_cannot_skip_acknowledgement(self):
+        store = self._store()
+        with pytest.raises(ValueError):
+            store.update_event_status(self._event()["id"], "resolved")
+
+    def test_terminal_states_cannot_be_reopened(self):
+        store = self._store()
+        eid = self._event()["id"]
+        store.update_event_status(eid, "acknowledged", actor="t")
+        store.update_event_status(eid, "resolved", actor="t")
+        with pytest.raises(ValueError):
+            store.update_event_status(eid, "open")
+
+    def test_unknown_status_is_rejected(self):
+        store = self._store()
+        with pytest.raises(ValueError):
+            store.update_event_status(self._event()["id"], "aknowledged")
+
+
+class TestSpeedAnalysisAccumulatesHistory:
+    """Speed needs a stable identity across frames or it is structurally zero."""
+
+    def test_stable_object_id_yields_a_real_speed(self):
+        from backend.services.analytics.speed_height_analysis import (
+            SpeedHeightAnalyzer,
+        )
+
+        analyzer = SpeedHeightAnalyzer()
+        result = {}
+        for i in range(8):
+            result = analyzer.analyze_object(
+                "cam1_track_7", [i * 30, 200, i * 30 + 50, 300],
+                "person", 1000.0 + i * 0.2, (480, 640),
+            )
+        assert result["speed_mps"] > 0, (
+            "speed is 0.0 for a subject that moved 210px in 1.4s - the object "
+            "id is not stable across frames, so no history accumulates"
+        )
+        assert len(analyzer.tracks) == 1, (
+            f"one moving subject produced {len(analyzer.tracks)} tracks"
+        )
+
+    def test_coordinator_uses_the_tracker_id(self):
+        """The coordinator must not mint a throwaway id per detection.
+
+        Asserted behaviourally rather than by scanning the source: the source
+        legitimately *mentions* get_next_object_id in the comment explaining
+        why it must not be used, so a text check would fail on the fix's own
+        documentation.
+        """
+        from backend.services.analytics.speed_height_analysis import (
+            SpeedHeightAnalyzer,
+        )
+        from backend.services.core_engine.processing_coordinator import (
+            ProcessingCoordinator,
+        )
+
+        coordinator = ProcessingCoordinator()
+        coordinator.speed_height_analyzer = SpeedHeightAnalyzer()
+        results = []
+        for i in range(8):
+            results = coordinator._run_speed_height_analysis(
+                1,
+                [{"class_name": "person", "confidence": 0.9,
+                  "bbox": [i * 30, 200, i * 30 + 50, 300], "track_id": 7}],
+                1000.0 + i * 0.2, (480, 640),
+            )
+        assert len(coordinator.speed_height_analyzer.tracks) == 1, (
+            "one subject over 8 frames produced "
+            f"{len(coordinator.speed_height_analyzer.tracks)} analyzer tracks - "
+            "the coordinator is minting a fresh object id per detection"
+        )
+        assert results and results[0]["speed_mps"] > 0, (
+            "coordinator reported 0.0 m/s for a subject that clearly moved"
+        )
+
+    def test_cleanup_uses_the_frame_clock(self):
+        """Wall-clock cleanup evicts everything when replaying archived footage."""
+        from backend.services.analytics.speed_height_analysis import (
+            SpeedHeightAnalyzer,
+        )
+
+        analyzer = SpeedHeightAnalyzer()
+        analyzer.analyze_object(
+            "cam1_track_1", [10, 200, 60, 300], "person", 1000.0, (480, 640)
+        )
+        analyzer.cleanup_old_tracks(1000.0)
+        assert len(analyzer.tracks) == 1, (
+            "cleanup compared a frame timestamp against time.time() and "
+            "evicted the track on the frame it was created"
+        )
+
+
+class TestTripwiresFire:
+    """Line zones were accepted by the API and then silently never evaluated."""
+
+    def test_line_zone_produces_a_crossing_event(self):
+        from backend.services.management.rules_engine import RulesEngine
+
+        engine = RulesEngine()
+        created = []
+        engine.event_store = type(
+            "FakeStore", (),
+            {"create_event": lambda self, **kw: created.append(kw)},
+        )()
+        zone = {"id": 9, "name": "Gate", "type": "line",
+                "coordinates": [[320, 0], [320, 480]], "camera_id": 1}
+        engine.zone_manager.get_zones_by_camera = lambda cid: [zone]
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        for x in (250, 290, 310, 330, 370):
+            engine.process_detections(
+                1, frame,
+                [{"class_name": "person", "confidence": 0.9,
+                  "bbox": [x - 20, 200, x + 20, 320], "track_id": 5}],
+                frame_time=1000.0 + x,
+            )
+        crossings = [e for e in created if e["rule_type"] == "line_crossing"]
+        assert crossings, (
+            "a subject walked through a tripwire and nothing fired: "
+            "zone_manager.is_point_in_zone has no branch for type 'line'"
+        )
+        assert crossings[0]["metadata"]["zone_id"] == 9, (
+            "tripwire event lost the zone id, so it cannot be attributed"
+        )
+
+
+class TestLearningEngineIsFed:
+    """/stats/learning must report the learner, not numbers borrowed elsewhere."""
+
+    def test_learning_stats_come_from_the_learning_engine(self):
+        import inspect
+
+        from backend.api import main
+
+        src = inspect.getsource(main.get_learning_stats)
+        assert "get_adaptive_learning_engine" in src, (
+            "/stats/learning relabels cross-camera tracker counts as behaviour "
+            "profiles; the learning engine is never consulted"
+        )
+
+    def test_coordinator_feeds_the_learner(self):
+        import inspect
+
+        from backend.services.core_engine.processing_coordinator import (
+            ProcessingCoordinator,
+        )
+
+        src = inspect.getsource(ProcessingCoordinator._run_speed_height_analysis)
+        assert "learn_behavior" in src, (
+            "adaptive_learning is imported but never called, so it can only "
+            "ever report having learned nothing"
+        )
+
+
+class TestDocumentedPathsExist:
+    """A path named in a doc must exist, or be explicitly marked conditional.
+
+    Documentation drifts silently: modules were reorganised into core_engine/,
+    analytics/, vision/, management/ and perception/, and nine docs kept
+    pointing at the pre-restructure locations. A reader following those paths
+    finds nothing and cannot tell whether the file moved or the feature was
+    never built.
+    """
+
+    # Tokens that legitimately do not resolve to a repository file.
+    ALLOWED_ABSENT = {
+        "/openapi.json",          # a URL, not a file
+        "../config/config.yaml",  # a documented search path
+        "yolov8m.pt",             # documented as not bundled
+        "data/qdrant/",           # created only when the service runs
+        "data/kafka/",
+        "data/streams/",
+    }
+
+    def test_every_documented_path_resolves(self):
+        import re
+
+        docs = sorted(
+            list(PROJECT_ROOT.glob("*.md")) + list(PROJECT_ROOT.glob("docs/*.md"))
+        )
+        assert docs, "no markdown files found to check"
+
+        real_names = set()
+        real_paths = set()
+        for path in PROJECT_ROOT.rglob("*"):
+            text = str(path)
+            if any(skip in text for skip in
+                   ("/node_modules/", "/.git/", "__pycache__", "/dist/")):
+                continue
+            if path.is_file():
+                real_names.add(path.name)
+                real_paths.add(str(path.relative_to(PROJECT_ROOT)))
+
+        pattern = re.compile(
+            r"`([A-Za-z0-9_./-]+\.(?:py|md|yaml|yml|json|jsx|js|pt|sh|bat|command))`"
+        )
+        missing = {}
+        for doc in docs:
+            for match in pattern.finditer(doc.read_text(encoding="utf-8")):
+                token = match.group(1)
+                if token in self.ALLOWED_ABSENT:
+                    continue
+                if "/" in token:
+                    if token in real_paths or any(
+                        p.endswith(token) for p in real_paths
+                    ):
+                        continue
+                elif token in real_names:
+                    continue
+                missing.setdefault(doc.name, set()).add(token)
+
+        assert not missing, (
+            "documentation references paths that do not exist: "
+            + "; ".join(f"{k}: {sorted(v)}" for k, v in sorted(missing.items()))
+        )

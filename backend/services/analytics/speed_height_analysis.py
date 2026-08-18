@@ -374,9 +374,15 @@ class SpeedHeightAnalyzer:
         
         return tracks_info
 
-    def cleanup_old_tracks(self):
-        """Remove tracks that haven't been updated recently"""
-        current_time = time.time()
+    def cleanup_old_tracks(self, now: Optional[float] = None):
+        """Remove tracks that haven't been updated recently.
+
+        `now` must be the frame clock when one is available: `last_seen` is set
+        from the frame timestamp, so comparing it against time.time() on
+        replayed footage yields an age of decades and evicts every track on the
+        frame it was created.
+        """
+        current_time = time.time() if now is None else now
         expired = [
             obj_id for obj_id, track in self.tracks.items()
             if current_time - track['last_seen'] > self.track_timeout

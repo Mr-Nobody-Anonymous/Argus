@@ -40,7 +40,7 @@ class EventStore:
                     camera_id, timestamp, rule_type, object_type, confidence,
                     bbox, snapshot_path, priority, status, metadata, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'detected', ?, ?)
                 """,
                 (
                     camera_id, timestamp, rule_type, object_type, confidence,
@@ -132,13 +132,77 @@ class EventStore:
         
         return events, total
 
-    def update_event_status(self, event_id: int, status: str) -> Optional[Dict]:
-        """Update event status"""
-        self.db.execute(
-            "UPDATE events SET status = ? WHERE id = ?",
-            (status, event_id)
+    # Event lifecycle. An event moves DETECTED -> OPEN -> ACKNOWLEDGED ->
+    # RESOLVED, and may be dismissed as a false positive from any live state.
+    # The transition table is enforced rather than advisory: update_event_status
+    # previously wrote whatever string it was handed, so a typo silently created
+    # a new status that no filter would ever match again, and an event could
+    # jump straight from DETECTED to RESOLVED with no one having looked at it.
+    STATUS_DETECTED = "detected"
+    STATUS_OPEN = "open"
+    STATUS_ACKNOWLEDGED = "acknowledged"
+    STATUS_RESOLVED = "resolved"
+    STATUS_FALSE_POSITIVE = "false_positive"
+
+    ALLOWED_TRANSITIONS = {
+        STATUS_DETECTED: {STATUS_OPEN, STATUS_ACKNOWLEDGED, STATUS_FALSE_POSITIVE},
+        STATUS_OPEN: {STATUS_ACKNOWLEDGED, STATUS_FALSE_POSITIVE},
+        STATUS_ACKNOWLEDGED: {STATUS_RESOLVED, STATUS_FALSE_POSITIVE},
+        # Terminal states.
+        STATUS_RESOLVED: set(),
+        STATUS_FALSE_POSITIVE: set(),
+    }
+
+    def update_event_status(self, event_id: int, status: str,
+                            actor: Optional[str] = None) -> Optional[Dict]:
+        """Move an event to `status`, enforcing the lifecycle.
+
+        Raises ValueError on an unknown status or an illegal transition, so a
+        bad call fails loudly instead of corrupting the feed's state machine.
+        """
+        status = (status or "").strip().lower()
+        if status not in self.ALLOWED_TRANSITIONS:
+            raise ValueError(
+                f"unknown event status {status!r}; "
+                f"valid: {sorted(self.ALLOWED_TRANSITIONS)}"
+            )
+
+        current = self.get_event(event_id)
+        if current is None:
+            return None
+
+        present = (current.get("status") or self.STATUS_DETECTED).strip().lower()
+        if present not in self.ALLOWED_TRANSITIONS:
+            # Legacy rows may hold a status from before the lifecycle existed.
+            present = self.STATUS_DETECTED
+        if status != present and status not in self.ALLOWED_TRANSITIONS[present]:
+            raise ValueError(
+                f"illegal transition {present!r} -> {status!r}; "
+                f"allowed from {present!r}: "
+                f"{sorted(self.ALLOWED_TRANSITIONS[present]) or 'none (terminal)'}"
+            )
+
+        now = datetime.now()
+        if status == self.STATUS_ACKNOWLEDGED:
+            self.db.execute(
+                "UPDATE events SET status = ?, acknowledged_by = ?, "
+                "acknowledged_at = ? WHERE id = ?",
+                (status, actor, now, event_id),
+            )
+        elif status == self.STATUS_RESOLVED:
+            self.db.execute(
+                "UPDATE events SET status = ?, resolved_by = ?, "
+                "resolved_at = ? WHERE id = ?",
+                (status, actor, now, event_id),
+            )
+        else:
+            self.db.execute(
+                "UPDATE events SET status = ? WHERE id = ?", (status, event_id)
+            )
+        logger.info(
+            f"Event {event_id}: {present} -> {status}"
+            + (f" by {actor}" if actor else "")
         )
-        logger.info(f"Updated event {event_id} status to {status}")
         return self.get_event(event_id)
 
     def delete_old_events(self, retention_days: int = 30) -> int:

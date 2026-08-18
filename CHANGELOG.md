@@ -5,6 +5,87 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Analysis coverage — closing the gap between what Argus computes and what it reports
+
+### Perception observations now reach operators
+- `backend/services/management/observation_events.py`: promotes actionable
+  perception observations (dwell, pacing, abandonment, occupancy anomaly,
+  disappearance, scene change) into the `events` table with their evidence,
+  confidence and provenance. Previously these were computed, logged and stored
+  in their own table but never surfaced in the event feed — Argus was analysing
+  far more than it reported. Verified live: 92 events across 4 kinds from a
+  75-second run that previously produced zero.
+- Only grounded, actionable observations are promoted; bookkeeping kinds
+  (`object_appeared`, `object_left_frame`, `track_summary`) are suppressed by
+  declared policy and remain queryable via `/memory/recall`.
+- Per-(camera, kind, subject) cooldown stops a persisting condition flooding the
+  feed. The dedup table is bounded.
+
+### Three configured rules were never implemented
+`config.yaml` declared `speed_violation`, `fall_detection` and
+`abandoned_object` as `enabled: true` while the engine implemented only
+intrusion and loitering. All three are now implemented, plus `line_crossing`.
+
+- **`speed_violation`** requires per-camera ground-plane calibration
+  (`backend/services/management/calibration.py`). An uncalibrated camera reports
+  its blocker rather than converting pixels to km/h with a global guess.
+- **`fall_detection`** requires real pose keypoints; the bbox aspect-ratio
+  fallback cannot distinguish a fall from crouching and is refused.
+- **`abandoned_object`** derives owner-absence from detection geometry.
+- **`line_crossing`** wires up `zone_alerts.py`, which nothing had ever
+  imported. `zone_manager.is_point_in_zone()` has no branch for type `line`, so
+  tripwire zones were accepted by the API and silently never evaluated.
+- `GET /api/v1/rules/status` reports configured vs implemented vs *can actually
+  fire here*, with the specific blocker. Blockers are probed, not accumulated
+  from runtime side effects.
+
+### Defects found and fixed while wiring the above
+- **Speed was structurally always 0.0.** The coordinator called
+  `get_next_object_id()` per detection per frame, so the analyzer's position
+  history never accumulated, and `tracks` leaked one dead single-point entry per
+  detection per frame (~100k/hour on one busy camera). Now keyed on the
+  tracker's persistent id.
+- **`cleanup_old_tracks()` compared frame timestamps to `time.time()`**,
+  evicting every track on the frame it was created when replaying footage.
+- **`RuleConfig` silently discarded unknown keys.** Per-rule tuning
+  (`classes`, `move_tolerance_px`, `violation_margin`) was parsed, dropped, and
+  replaced by hard-coded defaults with no warning. Now `extra="allow"`.
+- **`owner_gone` was never computed**, so `detect_abandonment()` was dead code
+  everywhere in the system.
+- **`zone_alerts.load_zones()` dropped the zone `id`**, so every tripwire event
+  would have reported `zone_id: 0` and been unattributable.
+- **`adaptive_learning.py` was never called by anything**, and
+  `/stats/learning` relabelled cross-camera tracker counts as "behaviour
+  profiles" — reporting a subsystem that had learned nothing. Now fed from the
+  coordinator and reporting its own counters.
+- **A snapshot-cap test read the shared snapshot directory**, so it passed on CI
+  and failed on any machine that had actually run Argus.
+- **`/api/v1/events/lifecycle` was shadowed by `/events/{event_id}`** and
+  returned 422; literal routes must be registered before parameterised ones.
+
+### Event lifecycle
+- `detected → open → acknowledged → resolved`, plus `false_positive` from any
+  live state, enforced by `EventStore.ALLOWED_TRANSITIONS`. `track_id`,
+  `acknowledged_by/at` and `resolved_by/at` added by an idempotent migration.
+- `PATCH /api/v1/events/{id}/status` (operator role) records the acting user;
+  illegal transitions return 400.
+
+### Frontend
+- New **Memory Explorer** page: search observations with their evidence, and a
+  panel naming any rule that cannot fire here.
+- Event Feed gained Acknowledge / Resolve / False-positive actions.
+
+### Documentation
+- Fixed 9 stale module paths across 3 docs left behind by the restructure.
+- Conditional artefacts (`yolov8m.pt`, `data/qdrant/`, `data/kafka/`,
+  `data/streams/`) are now labelled as such instead of implying they exist.
+- New test asserts every path named in any `.md` resolves.
+
+### Tests
+- 236 passing (was 208). 14 new mutation-verified guarantees, each confirmed to
+  fail when the behaviour it protects is broken.
+
+
 ## [Unreleased]
 
 ### Added

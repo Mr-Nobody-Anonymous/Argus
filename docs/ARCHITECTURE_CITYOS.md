@@ -26,8 +26,8 @@
 ## Current State Audit - What Breaks at 100 Cameras
 
 **Files That MUST Be Deleted/Replaced:**
-- `backend/services/camera_manager.py` - Uses OpenCV VideoCapture synchronously
-- `backend/services/stream_ingestion.py` - Single-threaded frame capture
+- `backend/services/management/camera_manager.py` - Uses OpenCV VideoCapture synchronously
+- `backend/services/management/stream_ingestion.py` - Single-threaded frame capture
 - `backend/api/main.py` - Monolithic API handling video streams directly
 
 **Issues Identified:**

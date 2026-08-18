@@ -314,6 +314,10 @@ rules:
     enabled: true
     priority: high
     description: "Person/vehicle enters restricted zone"
+  line_crossing:
+    enabled: true
+    priority: high
+    description: "Object crosses a virtual tripwire (zone type 'line')"
   loitering:
     enabled: true
     threshold_seconds: 30
@@ -322,14 +326,45 @@ rules:
   speed_violation:
     enabled: true
     threshold_kmh: 30
+    # Requires per-camera ground-plane calibration (see camera_calibration
+    # below). On an uncalibrated camera this rule reports itself inactive
+    # rather than converting pixels to km/h with a guessed constant.
+    violation_margin: 1.25   # must exceed threshold by 25% to absorb calib error
+    classes: [car, truck, bus, motorcycle, bicycle]
     priority: high
     description: "Vehicle exceeds speed threshold"
   fall_detection:
     enabled: true
+    # Requires real pose keypoints (MediaPipe). The bbox aspect-ratio fallback
+    # cannot tell a fall from crouching, so require_keypoints stops a heuristic
+    # being promoted to a high-priority medical alert.
+    require_keypoints: true
     priority: high
     description: "Person fall detected via pose estimation"
   abandoned_object:
     enabled: true
     threshold_seconds: 60
+    move_tolerance_px: 25      # movement under this counts as stationary
+    owner_proximity_px: 150    # a person this close counts as the owner present
+    classes: [backpack, handbag, suitcase, bottle, laptop]
     priority: medium
-    description: "Stationary object detected"
+    description: "Stationary object unattended past the threshold"
+
+# Per-camera ground-plane calibration.
+#
+# Speed can only be reported for a camera listed here. Without an entry the
+# camera is treated as uncalibrated and the speed_violation rule declines to
+# fire, because pixel displacement times a guessed constant is not a
+# measurement. Set meters_per_pixel directly, or give a reference object of
+# known real width and its width in pixels and it will be derived.
+#
+# Example:
+# camera_calibration:
+#   "1":
+#     meters_per_pixel: 0.0182
+#     source: "measured: 3.5 m lane width spans 192 px at mid-frame"
+#   "2":
+#     reference_width_m: 1.8
+#     reference_width_px: 96
+#     source: "parked sedan width, mid-frame"
+camera_calibration: {}

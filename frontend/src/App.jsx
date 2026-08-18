@@ -23,6 +23,7 @@ import {
     Analytics,
     Shield,
     Psychology,
+    Search,
     People,
     Radar,
     Timeline,
@@ -36,6 +37,7 @@ import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
 import SurveillanceDashboard from './pages/SurveillanceDashboard';
 import AdaptiveLearningDashboard from './pages/AdaptiveLearningDashboard';
+import MemoryExplorer from './pages/MemoryExplorer';
 import { authAPI } from './services/api';
 
 const theme = createTheme({
@@ -156,6 +158,7 @@ function Shell({ user, onLogout }) {
                         <NavItem to="/events" icon={<Event />} label="Events" />
                         <NavItem to="/analytics" icon={<Analytics />} label="Analytics" />
                         <NavItem to="/learning" icon={<Psychology />} label="Adaptive Learning" />
+                        <NavItem to="/memory" icon={<Search />} label="Memory" />
                     </List>
                     <Divider sx={{ my: 2 }} />
                     <Typography variant="caption" sx={{ px: 2, color: 'text.secondary' }}>
@@ -180,6 +183,7 @@ function Shell({ user, onLogout }) {
                         <Route path="/events" element={<EventFeed />} />
                         <Route path="/analytics" element={<AnalyticsDashboard />} />
                         <Route path="/learning" element={<AdaptiveLearningDashboard />} />
+                        <Route path="/memory" element={<MemoryExplorer />} />
                     </Routes>
                 </Container>
             </Box>

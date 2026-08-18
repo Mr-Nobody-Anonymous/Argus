@@ -8,7 +8,7 @@
 >    (face, LPR, pose, enhancement), `backend/services/core_engine/` (inference,
 >    tracking, agents), `backend/services/analytics/` (Re-ID, anomaly, speed),
 >    `backend/services/management/` (rules, zones, events, retention, audit).
->    So `backend/services/deep_tracker.py` is now
+>    So `backend/services/core_engine/deep_tracker.py` is now
 >    `backend/services/core_engine/deep_tracker.py`, and so on.
 > 2. **Heavy dependencies are optional and mostly absent.** The system runs
 >    without PaddleOCR, MediaPipe, InsightFace, and `opencv-contrib`, falling
@@ -44,7 +44,7 @@ This document summarizes the integration of forked repositories into the Argus A
 - Automatic-Number-Plate-Recognition-ANPR-Facial-Recognition-System-FRS
 
 **Implementation:**
-- Created `backend/services/license_plate_recognition.py`
+- Created `backend/services/vision/license_plate_recognition.py`
 - Vehicle detection → license plate region detection → OCR
 - Region-specific plate formatting (US, EU, UK)
 
@@ -61,7 +61,7 @@ This document summarizes the integration of forked repositories into the Argus A
 - AnomalyDetectionCVPR2018-Pytorch - Video anomaly detection
 
 **Implementation:**
-- Created `backend/services/anomaly_detector.py`
+- Created `backend/services/analytics/anomaly_detector.py`
 - Motion-based anomalies (large moving regions)
 - Behavior-based anomalies (speed, trajectory, loitering)
 - Abandoned object detection
@@ -72,7 +72,7 @@ This document summarizes the integration of forked repositories into the Argus A
 - fast-reid - Alternative re-id system
 
 **Implementation:**
-- Created `backend/services/person_reid.py`
+- Created `backend/services/analytics/person_reid.py`
 - Feature extraction using ResNet backbone
 - Cross-camera person matching
 - Trajectory reconstruction
@@ -84,7 +84,7 @@ This document summarizes the integration of forked repositories into the Argus A
 - ByteTrack - Multi-object tracker
 
 **Implementation:**
-- Created `backend/services/deep_tracker.py`
+- Created `backend/services/core_engine/deep_tracker.py`
 - Kalman filter for motion prediction
 - IoU-based matching
 - Persistent track IDs
@@ -96,7 +96,7 @@ This document summarizes the integration of forked repositories into the Argus A
 - MediaPipe - Cross-platform ML solutions
 
 **Implementation:**
-- Created `backend/services/pose_estimator.py`
+- Created `backend/services/vision/pose_estimator.py`
 - MediaPipe Pose for 33 keypoints
 - Pose classification (standing, sitting, lying)
 - Fall detection capability

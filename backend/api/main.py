@@ -7,7 +7,8 @@ import sys
 import time
 from pathlib import Path
 from fastapi import (
-    FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request, status
+    FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request,
+    Body, status
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -631,6 +632,27 @@ async def get_event_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# NOTE: this literal route MUST be registered before /events/{event_id}.
+# FastAPI matches in declaration order, so with the parameterised route first
+# a request for /events/lifecycle is parsed as event_id="lifecycle" and fails
+# with a 422 instead of ever reaching this handler.
+@app.get("/api/v1/events/lifecycle", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_event_lifecycle():
+    """The permitted event state machine, so clients need not hardcode it."""
+    from backend.services.management.event_store import EventStore
+
+    return {
+        "statuses": sorted(EventStore.ALLOWED_TRANSITIONS),
+        "transitions": {
+            k: sorted(v) for k, v in EventStore.ALLOWED_TRANSITIONS.items()
+        },
+        "terminal": sorted(
+            k for k, v in EventStore.ALLOWED_TRANSITIONS.items() if not v
+        ),
+    }
+
+
 @app.get("/api/v1/events/{event_id}", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_event(event_id: int):
     """Get event by ID"""
@@ -644,6 +666,43 @@ async def get_event(event_id: int):
         raise
     except Exception as e:
         logger.error(f"Error getting event: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/v1/events/{event_id}/status", response_model=dict,
+           dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def update_event_status(
+    event_id: int,
+    payload: dict = Body(...),
+    user: AuthUser = Depends(get_current_user),
+):
+    """Move an event through its lifecycle.
+
+    detected -> open -> acknowledged -> resolved, or dismissed as
+    false_positive from any live state. The transition is enforced by the
+    event store; an illegal one is a 400 rather than a silent write, and the
+    acting user is recorded so a review can be proven after the fact.
+    """
+    status_value = (payload or {}).get("status")
+    if not status_value:
+        raise HTTPException(status_code=400, detail="status is required")
+    try:
+        event_store = get_event_store()
+        event = event_store.update_event_status(
+            event_id, status_value, actor=getattr(user, "username", None)
+        )
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        # The audit middleware already records every mutating request with the
+        # principal, path and outcome, so no explicit audit call is needed here.
+        return {"event": event}
+    except ValueError as e:
+        # Unknown status or illegal transition: the caller's fault, not ours.
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating event status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1028,25 +1087,36 @@ async def get_learning_stats():
         # Get cross-camera tracking stats
         tracker_stats = tracker.get_tracker_statistics()
         
+        # Report the learning engine's OWN counters. This endpoint previously
+        # relabelled cross-camera tracker numbers as "behavior profiles" and
+        # "learning buffer size" - the adaptive learning engine was never
+        # consulted, and in fact was never called by anything, so the figures
+        # described a subsystem that had learned nothing. Borrowed numbers
+        # under someone else's name are indistinguishable from working.
+        from backend.services.analytics.adaptive_learning import (
+            get_adaptive_learning_engine,
+        )
+        learner = get_adaptive_learning_engine()
+        learning_stats = learner.get_learning_stats()
+
         stats = {
-            "total_behavior_profiles": tracker_stats.get('total_tracked', 0),
-            "total_emotion_baselines": len(get_face_recognition().get_known_faces_list()),
-            "learning_buffer_size": tracker_stats.get('active_tracks', 0),
-            "sklearn_available": SKLEARN_AVAILABLE,
+            **learning_stats,
             "cross_camera_stats": tracker_stats,
             "anomaly_stats": {
                 "enabled": anomaly.enabled,
                 "pattern_history_size": len(anomaly.pattern_history) if hasattr(anomaly, 'pattern_history') else 0
             },
+            # Availability is probed, not asserted. Several of these depend on
+            # optional packages that are absent on a CPU-only host.
             "features": {
                 "behavior_pattern_learning": True,
-                "emotion_recognition": True,
-                "trajectory_prediction": True,
+                "emotion_recognition": get_face_recognition().enabled,
+                "trajectory_prediction": bool(tracker_stats),
                 "cross_camera_tracking": True,
-                "clustering": True
+                "clustering": SKLEARN_AVAILABLE,
             }
         }
-        
+
         return stats
     except Exception as e:
         logger.error(f"Error getting learning stats: {e}")
@@ -1382,6 +1452,95 @@ async def memory_stats():
         return get_memory().report()
     except Exception as e:
         logger.error(f"Memory stats failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/rules/status", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_rules_status():
+    """Which rules are configured, implemented, and actually able to fire.
+
+    config.yaml can declare a rule `enabled: true` while no code evaluates it -
+    which was true of speed_violation, fall_detection and abandoned_object for
+    the life of this project. This endpoint makes that difference visible
+    instead of leaving an operator to assume coverage they do not have.
+    """
+    try:
+        from backend.services.management.rules_engine import get_rules_engine
+
+        engine = get_rules_engine()
+        status = engine.rule_status()
+        return {
+            "rules": status,
+            "summary": {
+                "configured": len(status),
+                "implemented": sum(1 for v in status.values() if v["implemented"]),
+                "can_fire_now": sum(1 for v in status.values() if v["can_fire"]),
+                "blocked": [k for k, v in status.items() if v["blockers"]],
+            },
+        }
+    except Exception as e:
+        logger.error(f"Rule status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/rules/calibration", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_calibration_status():
+    """Per-camera ground-plane calibration, and what it gates."""
+    try:
+        from backend.services.management.calibration import get_calibration_registry
+        from backend.database.db import get_db
+
+        registry = get_calibration_registry()
+        db = get_db()
+        cameras = db.execute("SELECT id, name FROM cameras")
+        out = []
+        for row in cameras:
+            cid = row["id"] if isinstance(row, dict) else row[0]
+            name = row["name"] if isinstance(row, dict) else row[1]
+            cal = registry.get(cid)
+            out.append({
+                "camera_id": cid,
+                "name": name,
+                "calibrated": cal.is_calibrated,
+                "meters_per_pixel": cal.meters_per_pixel,
+                "source": cal.source,
+                "reason": cal.reason(),
+            })
+        return {"cameras": out, **registry.report()}
+    except Exception as e:
+        logger.error(f"Calibration status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/observations/promotion", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_promotion_stats():
+    """How many perception observations became operator-visible events."""
+    try:
+        from backend.services.management.observation_events import (
+            KIND_POLICY,
+            get_observation_bridge,
+        )
+
+        bridge = get_observation_bridge()
+        return {
+            "stats": bridge.stats(),
+            "policy": {
+                kind: {
+                    "promoted_to_events": p.promote,
+                    "priority": p.priority,
+                    "cooldown_s": p.cooldown_s,
+                    "description": p.description,
+                }
+                for kind, p in sorted(KIND_POLICY.items())
+            },
+            "note": (
+                "Observations that are not promoted remain fully queryable "
+                "through /api/v1/memory/recall - suppressing an alert never "
+                "discards the record."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Promotion stats failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

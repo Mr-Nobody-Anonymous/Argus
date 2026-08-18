@@ -60,6 +60,22 @@ class ProcessingCoordinator:
         self.evolutionary_engine = get_evolutionary_engine()
         self.config = get_config()
 
+        # Bridge perception observations into the events table.
+        from backend.services.management.observation_events import (
+            get_observation_bridge,
+        )
+        self.observation_bridge = get_observation_bridge()
+
+        # Adaptive learning: behaviour baselines per subject.
+        from backend.services.analytics.adaptive_learning import (
+            get_adaptive_learning_engine,
+        )
+        self.adaptive_learning = get_adaptive_learning_engine()
+
+        # Pose is computed after the rules engine runs, so fall detection uses
+        # the previous frame's keypoints. Bounded per camera, not per track.
+        self._last_pose_results: Dict[int, list] = {}
+
         # ── Canonical perception layer ──
         # Scene -> Track -> SceneGraph -> Observation, accumulated across
         # frames. Opt-out via ARGUS_NO_PERCEPTION=1 so the legacy path can be
@@ -197,7 +213,7 @@ class ProcessingCoordinator:
 
                 # Cleanup old tracking data periodically
                 if int(frame_time) % 5 == 0:
-                    self.speed_height_analyzer.cleanup_old_tracks()
+                    self.speed_height_analyzer.cleanup_old_tracks(frame_time)
 
                 # Register heartbeat with state recovery manager
                 self.state_recovery.register_heartbeat()
@@ -277,8 +293,16 @@ class ProcessingCoordinator:
                 self.lpr_agent.apply_allocation(lpr_alloc)
 
         # ── Step 3: Process detections through rules engine ──
+        # Pose is computed later in the frame (Step 6), so fall detection is fed
+        # the *previous* frame's keypoints. A fall persists for many frames, so
+        # one frame of latency costs nothing; reordering the pipeline to avoid
+        # it would risk the swarm's time budget for no real gain.
         if detections:
-            self.rules_engine.process_detections(camera_id, enhanced_frame, detections)
+            self.rules_engine.process_detections(
+                camera_id, enhanced_frame, detections,
+                pose_results=self._last_pose_results.get(camera_id),
+                frame_time=frame_time,
+            )
 
         # ── Step 3b: Canonical perception (Scene -> Track -> SceneGraph) ──
         # Runs alongside the legacy path rather than replacing it, so the
@@ -298,6 +322,15 @@ class ProcessingCoordinator:
                         f"(confidence {obs.confidence:.2f}; "
                         f"evidence: {'; '.join(obs.evidence)})"
                     )
+                # Promote actionable observations to operator-visible events.
+                # Without this the perception layer analysed dwell, pacing,
+                # abandonment and occupancy anomalies but reported none of them
+                # to the Event Feed - it was thinking and never speaking.
+                self.observation_bridge.promote(
+                    camera_id,
+                    self._perception_result.observations,
+                    frame=enhanced_frame,
+                )
             except Exception as e:  # noqa: BLE001 - never break the frame
                 logger.warning(f"Perception pipeline error (non-fatal): {e}")
 
@@ -332,6 +365,7 @@ class ProcessingCoordinator:
                             pose_results.append(pose)
             except Exception as e:
                 logger.warning(f"Pose estimation error: {e}")
+        self._last_pose_results[camera_id] = pose_results
 
         # ── Step 7: Anomaly Detection ──
         anomalies = []
@@ -406,9 +440,13 @@ class ProcessingCoordinator:
         except Exception as e:
             logger.warning(f"Logic mutator filter error (sandboxed fallback): {e}")
 
-        # Step 3: Rules engine
+        # Step 3: Rules engine (see note in the swarm path re: pose latency)
         if detections:
-            self.rules_engine.process_detections(camera_id, enhanced_frame, detections)
+            self.rules_engine.process_detections(
+                camera_id, enhanced_frame, detections,
+                pose_results=self._last_pose_results.get(camera_id),
+                frame_time=frame_time,
+            )
 
         # Step 3b: Canonical perception - same as the swarm path, so both modes
         # accumulate an identical world model and remain comparable.
@@ -425,6 +463,15 @@ class ProcessingCoordinator:
                         f"(confidence {obs.confidence:.2f}; "
                         f"evidence: {'; '.join(obs.evidence)})"
                     )
+                # Promote actionable observations to operator-visible events.
+                # Without this the perception layer analysed dwell, pacing,
+                # abandonment and occupancy anomalies but reported none of them
+                # to the Event Feed - it was thinking and never speaking.
+                self.observation_bridge.promote(
+                    camera_id,
+                    self._perception_result.observations,
+                    frame=enhanced_frame,
+                )
             except Exception as e:  # noqa: BLE001 - never break the frame
                 logger.warning(f"Perception pipeline error (non-fatal): {e}")
 
@@ -450,6 +497,7 @@ class ProcessingCoordinator:
                         pose['track_id'] = det.get('track_id', det.get('object_id', 'unknown'))
                         pose['detection'] = det['bbox']
                         pose_results.append(pose)
+        self._last_pose_results[camera_id] = pose_results
 
         # Step 7: Anomaly Detection
         anomalies = []
@@ -505,7 +553,22 @@ class ProcessingCoordinator:
         """Run speed and height analysis on detections."""
         analysis_results = []
         for detection in detections:
-            object_id = f"cam{camera_id}_" + self.speed_height_analyzer.get_next_object_id()
+            # The object id MUST be stable across frames for the same subject.
+            #
+            # This used to call get_next_object_id() per detection per frame, so
+            # every subject received a brand-new id on every frame. The analyzer
+            # keys its position history by that id, so no history could ever
+            # accumulate: speed_mps was structurally always 0.0, every speed
+            # category was "stationary", and self.tracks grew by one dead
+            # single-point entry per detection per frame - roughly 100k entries
+            # an hour on one busy camera. Keying on the tracker's persistent id
+            # is what makes the measurement possible at all.
+            track_id = detection.get('track_id', detection.get('object_id'))
+            if track_id is None:
+                # No tracker id: skip rather than mint a throwaway id that
+                # silently produces a fake 0.0 m/s reading.
+                continue
+            object_id = f"cam{camera_id}_track_{track_id}"
             analysis = self.speed_height_analyzer.analyze_object(
                 object_id=object_id,
                 bbox=detection['bbox'],
@@ -513,10 +576,29 @@ class ProcessingCoordinator:
                 frame_time=frame_time,
                 frame_shape=frame_shape
             )
-            if 'track_id' in detection:
-                analysis['track_id'] = detection['track_id']
+            analysis['track_id'] = track_id
             analysis['object_id'] = object_id
             analysis_results.append(analysis)
+
+            # Feed the adaptive learning engine. It was fully implemented and
+            # never called by anything, so /stats/learning reported a subsystem
+            # that had, in the most literal sense, learned nothing.
+            try:
+                self.adaptive_learning.learn_behavior(object_id, {
+                    'speed_mps': analysis.get('speed_mps', 0.0),
+                    'direction': analysis.get('direction'),
+                    'class_name': detection['class_name'],
+                    'camera_id': camera_id,
+                })
+            except Exception as exc:  # noqa: BLE001 - never break the frame
+                logger.debug(f"Adaptive learning update failed: {exc}")
+
+        # Bound the analyzer's track table on the frame clock.
+        try:
+            self.speed_height_analyzer.cleanup_old_tracks(frame_time)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Speed analyzer cleanup failed: {exc}")
+
         return analysis_results
 
     def _store_analysis(

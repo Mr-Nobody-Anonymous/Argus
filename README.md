@@ -241,8 +241,24 @@ curl -X POST http://localhost:8000/api/v1/cameras \
 - **Multi-Camera Ingestion** – Concurrent RTSP / video-file / webcam streams with auto-reconnect, exponential backoff, native-FPS pacing for files, and EOF looping.
 - **YOLOv8 Detection** – Person, vehicle, bicycle, and object detection with configurable confidence / IoU thresholds. Ships with `yolov8n.pt`.
 - **Object Tracking** – Kalman-filtered motion prediction with two-stage association (IoU, then size-scaled centre distance) so identity survives the ~1s gap between processed frames on CPU.
-- **Zone-Based Rules** – Polygon virtual zones with intrusion and loitering detection, keyed on persistent track IDs.
-- **Event Management** – SQLite-backed event store with **sliding-window** deduplication (one event per subject per episode, not one per window), snapshot capture, and MQTT publishing.
+- **Zone-Based Rules** – Polygon virtual zones (intrusion, loitering) and line
+  tripwires (`line_crossing`), keyed on persistent track IDs. Scene-scoped rules
+  (`speed_violation`, `fall_detection`, `abandoned_object`) need no zone and run
+  on every camera.
+- **Rule Honesty** – `GET /api/v1/rules/status` reports, per rule, whether it is
+  configured, implemented, and *actually able to fire here*. A rule whose
+  prerequisite is missing (no ground-plane calibration, no pose keypoints)
+  reports its blocker instead of quietly producing nothing — or worse, producing
+  a fabricated number.
+- **Observations Become Events** – Perception findings (dwell, pacing,
+  abandonment, occupancy anomalies, disappearances, scene changes) are promoted
+  into the operator event feed with the evidence that justified them. Only
+  grounded, actionable observations are promoted; bookkeeping kinds stay out.
+- **Event Management** – SQLite-backed event store with **sliding-window**
+  deduplication (one event per subject per episode, not one per window),
+  snapshot capture, and MQTT publishing. Events follow an enforced lifecycle —
+  `detected → open → acknowledged → resolved`, or `false_positive` — recording
+  who acted and when; an illegal transition is rejected, not silently written.
 - **Real-Time WebSocket Streaming** – Interleaved binary (JPEG) + JSON (detection metadata), authenticated at the handshake.
 - **Data Retention** – Scheduled purge of events, snapshots, anomalies, plates, and audit rows on independent per-type schedules.
 - **Image Enhancement** – CLAHE, denoising, sharpening, night vision, deblur, and HDR auto-enhancement.
@@ -469,11 +485,11 @@ Field notes: the class label key is **`class`** (not `class_name`), `bbox` is an
 
 ## 📊 API Reference
 
-**63 addressable operations**: 59 registered routes (53 under `/api/v1`, plus
+**68 addressable operations**: 64 registered routes (58 under `/api/v1`, plus
 `GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
 `/metrics`), 3 streaming routes and 1 WebSocket route.
 
-Of the 53 `/api/v1` operations, **50 require a token and 3 are public**.
+Of the 58 `/api/v1` operations, **55 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 
@@ -583,6 +599,30 @@ machine with no CUDA and no OCR engine it reports 12 of 18 capabilities
 available, each unavailable one naming the reason and the remedy — for example
 `ocr` explains that `tesseract` is missing *and* that text regions are still
 being detected without it.
+
+### Rules, Coverage & Event Lifecycle
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/rules/status` | viewer | Per rule: configured, implemented, and whether it **can actually fire here** — with the specific blocker when it cannot |
+| `GET` | `/api/v1/rules/calibration` | viewer | Per-camera ground-plane calibration, and what its absence disables |
+| `GET` | `/api/v1/observations/promotion` | viewer | How many perception observations became events, and which kinds are deliberately not promoted |
+| `GET` | `/api/v1/events/lifecycle` | viewer | The permitted event state machine, so clients need not hardcode it |
+| `PATCH` | `/api/v1/events/{event_id}/status` | operator | Advance an event; records the acting user. Illegal transitions return `400` |
+
+A rule declared `enabled: true` in `config.yaml` used to mean nothing on its
+own — `speed_violation`, `fall_detection` and `abandoned_object` were all
+advertised as enabled while no code evaluated them. They are implemented now,
+and `rules/status` exists so the difference between *configured* and *working*
+can never again be invisible.
+
+Two of them refuse to fire rather than guess:
+
+* **`speed_violation`** needs per-camera `camera_calibration`. Multiplying pixel
+  displacement by a global 0.05 m/px guess yields a number that looks like a
+  measurement and is not one. Uncalibrated cameras report the blocker instead.
+* **`fall_detection`** needs real pose keypoints. The bounding-box aspect-ratio
+  fallback cannot distinguish a fall from crouching or lying down, and a
+  high-priority medical alert must not rest on that.
 
 ### Memory & Search
 | Method | Path | Role | Description |

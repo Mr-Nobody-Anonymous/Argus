@@ -5,7 +5,7 @@ import os
 import re
 import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 import logging
 
@@ -167,6 +167,19 @@ class DatabaseConfig(BaseModel):
 
 
 class RuleConfig(BaseModel):
+    """One rule's configuration.
+
+    `extra="allow"` is deliberate. Rules carry per-rule tuning that only their
+    own implementation understands - classes, pixel tolerances, margins - and a
+    closed model silently *discarded* those keys: the value was present in
+    config.yaml, absent from the parsed object, and the rule fell back to its
+    hard-coded default with no warning anywhere. Configuration that is read,
+    accepted and then thrown away is worse than configuration that fails to
+    load, because the operator has every reason to believe it took effect.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
     enabled: bool = True
     priority: str = "medium"
     description: str = ""
@@ -339,6 +352,10 @@ class Config(BaseModel):
     evolutionary_engine: EvolutionaryEngineConfig = EvolutionaryEngineConfig()
     cameras: List[dict] = []
     rules: Dict[str, RuleConfig] = {}
+    # Per-camera ground-plane calibration, keyed by camera id as a string.
+    # Empty means no camera is calibrated, and speed_violation stays inactive
+    # rather than converting pixels to km/h with a guessed constant.
+    camera_calibration: Dict[str, Dict[str, Any]] = {}
 
 
 #: Absolute path to the repository root (the directory containing `backend/`).

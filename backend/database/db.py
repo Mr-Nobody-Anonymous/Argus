@@ -74,12 +74,43 @@ class Database:
                 bbox TEXT,
                 snapshot_path TEXT,
                 priority TEXT DEFAULT 'medium',
-                status TEXT DEFAULT 'new',
+                status TEXT DEFAULT 'detected',
                 metadata TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                -- Lifecycle: who looked at this event and when. Without these
+                -- an operator cannot prove an alert was ever reviewed, which
+                -- is the whole point of an audit-capable surveillance system.
+                track_id INTEGER,
+                acknowledged_by TEXT,
+                acknowledged_at TIMESTAMP,
+                resolved_by TEXT,
+                resolved_at TIMESTAMP,
                 FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE
             )
         """)
+
+        # Migrate pre-existing databases: ALTER TABLE ADD COLUMN is a no-op on
+        # a fresh schema but is required for a database created before the
+        # lifecycle columns existed. Checked per column so a partial migration
+        # can be completed rather than aborting the whole run.
+        existing_event_cols = {
+            row[1] for row in cursor.execute("PRAGMA table_info(events)")
+        }
+        for column, ddl in (
+            ("track_id", "INTEGER"),
+            ("acknowledged_by", "TEXT"),
+            ("acknowledged_at", "TIMESTAMP"),
+            ("resolved_by", "TEXT"),
+            ("resolved_at", "TIMESTAMP"),
+        ):
+            if column not in existing_event_cols:
+                cursor.execute(f"ALTER TABLE events ADD COLUMN {column} {ddl}")
+
+        # 'new' predates the lifecycle and matches no transition rule, so any
+        # event still holding it could never be acknowledged.
+        cursor.execute(
+            "UPDATE events SET status = 'detected' WHERE status = 'new'"
+        )
 
         # Create indexes for fast queries
         cursor.execute(

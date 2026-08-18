@@ -147,7 +147,12 @@ class ZoneAlerts:
         """Load zone definitions from database"""
         self.zones[camera_id] = {}
         for zone in zones:
+            # 'id' must be carried into the stored dict: _check_line_crossing
+            # and _check_intrusion read zone.get('id', 0) when building the
+            # ZoneEvent, so dropping it here made every tripwire event report
+            # zone_id 0 and become impossible to attribute to a real zone.
             self.zones[camera_id][zone['id']] = {
+                'id': zone['id'],
                 'name': zone['name'],
                 'type': zone['type'],
                 'coordinates': self._parse_coordinates(zone['coordinates'])

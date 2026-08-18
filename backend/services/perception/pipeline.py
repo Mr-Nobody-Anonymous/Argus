@@ -68,6 +68,16 @@ class FrameResult:
         }
 
 
+# An object with no person within this many pixels is unattended. Generous,
+# because a bag at a person's feet is often 100+ px from their centroid.
+OWNER_PROXIMITY_PX = 150.0
+
+# ...and it must stay unattended this long before "unowned" becomes
+# "abandoned". Shorter than the 30 s stationary requirement in
+# detect_abandonment, which remains the binding constraint.
+OWNER_ABSENT_S = 10.0
+
+
 class PerceptionPipeline:
     """Accumulates understanding across frames for one deployment.
 
@@ -110,6 +120,9 @@ class PerceptionPipeline:
         self._descriptors: Dict[Tuple[int, int], List[Any]] = {}
         self._persisted_observations = 0
         self._persisted_appearances = 0
+        # Frame-clock timestamp at which each object track was first seen with
+        # no person nearby. Feeds detect_abandonment's owner_gone argument.
+        self._owner_absent_since: Dict[int, float] = {}
 
     # -- main entry point -----------------------------------------------------
 
@@ -189,9 +202,21 @@ class PerceptionPipeline:
             logger.debug(f"Following detection failed: {exc}")
 
         # Per-track temporal checks (dwell, pacing, abandonment).
+        #
+        # detect_abandonment() deliberately refuses to infer whether an object's
+        # owner has left - that is a relationship fact, not a temporal one - and
+        # takes it as an argument. Nothing ever supplied it, so the
+        # abandoned_object check could never fire anywhere in the system. It is
+        # computed here, where every track in the scene is visible at once.
+        owner_gone_by_track = self._owner_gone(touched, ts)
         for track in touched:
             try:
-                observations.extend(analyse_track(track))
+                observations.extend(
+                    analyse_track(
+                        track,
+                        owner_gone=owner_gone_by_track.get(track.track_id, False),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.debug(f"Track analysis failed for {track.track_id}: {exc}")
 
@@ -338,6 +363,49 @@ class PerceptionPipeline:
                 return False
             self._last_text[camera_id] = now
             return True
+
+    def _owner_gone(self, touched, now: float) -> Dict[int, bool]:
+        """Which stationary objects currently have no person near them.
+
+        An object is "unowned" when no person track sits within
+        OWNER_PROXIMITY_PX of it. That alone is not abandonment - a bag is
+        unowned for a moment whenever its owner steps away - so the state must
+        persist for OWNER_ABSENT_S before it counts. The elapsed time is
+        measured on the frame clock, never wall-clock, so replayed footage
+        behaves the same as live.
+        """
+        people = []
+        objects = []
+        for track in touched:
+            pts = track.trajectory
+            if not pts:
+                continue
+            last = pts[-1]
+            if track.kind == "person":
+                people.append((last.x, last.y))
+            elif track.kind == "object":
+                objects.append((track, last.x, last.y))
+
+        result: Dict[int, bool] = {}
+        for track, ox, oy in objects:
+            near = any(
+                ((ox - px) ** 2 + (oy - py) ** 2) ** 0.5 <= OWNER_PROXIMITY_PX
+                for px, py in people
+            )
+            if near:
+                # Owner present: reset the clock.
+                self._owner_absent_since.pop(track.track_id, None)
+                result[track.track_id] = False
+                continue
+            since = self._owner_absent_since.setdefault(track.track_id, now)
+            result[track.track_id] = (now - since) >= OWNER_ABSENT_S
+
+        # Bound the bookkeeping: drop entries for tracks no longer present.
+        if len(self._owner_absent_since) > 512:
+            live = {t.track_id for t, _, _ in objects}
+            for tid in [k for k in self._owner_absent_since if k not in live]:
+                del self._owner_absent_since[tid]
+        return result
 
     def _retire_if_due(self, now: float, interval_s: float = 2.0) -> List[Observation]:
         with self._lock:

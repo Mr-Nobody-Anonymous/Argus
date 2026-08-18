@@ -206,16 +206,23 @@ camera→inference→tracking→rules→event. `M–L`
 Stamp every event with the model versions that produced it. Without this you
 cannot explain why yesterday's detections differ from today's. `S–M`
 
-### 3.5 Event schema & lifecycle — **partially exists**
+### 3.5 Event schema & lifecycle — **done**
 
 Correction to the review: the schema is better than assumed. Current columns:
 `id, camera_id, timestamp, rule_type, object_type, confidence, bbox,
 snapshot_path, priority, status, metadata, created_at`, and `metadata` already
 carries `zone_id`, `zone_name`, `duration_seconds`, `inference_time_ms`.
 
-Missing: `track_id`/`global_track_id` promoted to columns, `model_versions`,
-`acknowledged_by`/`acknowledged_at`, and an enforced
-`DETECTED→OPEN→ACKNOWLEDGED→RESOLVED` transition. `M`
+Delivered: `track_id`, `acknowledged_by`/`acknowledged_at`,
+`resolved_by`/`resolved_at` are real columns (added by an idempotent migration
+in `db.py`), and `EventStore.ALLOWED_TRANSITIONS` enforces
+`detected → open → acknowledged → resolved` plus `false_positive` from any live
+state. `update_event_status()` raises on an unknown status or an illegal move;
+`PATCH /api/v1/events/{id}/status` surfaces that as a `400`. Legacy rows holding
+the pre-lifecycle `'new'` status are migrated to `'detected'`, because a status
+outside the transition table can never be advanced.
+
+Still missing: `model_versions` on the event row. `S`
 
 ### 3.6 Video evidence — **not started**
 
@@ -228,11 +235,16 @@ SQLite is the only backend. It is genuinely fine for single-node, and the
 Django admin already shares the same file. For multi-writer production, move to
 Postgres and keep SQLite as the documented dev mode. `L`
 
-### 3.8 Alert policy engine — **rules exist, policies don't**
+### 3.8 Alert policy engine — **rules complete; channels still MQTT-only**
 
-`rules_engine.py` works (intrusion, loitering verified live) and MQTT publishing
-exists. Missing: conditional policies (time-of-day, confidence floor, severity
-mapping) and channels beyond MQTT (webhook, email, Slack). `M`
+All six configured rules are now implemented and verified: intrusion,
+loitering, `line_crossing` (via the previously dormant `zone_alerts.py`),
+`speed_violation`, `fall_detection` and `abandoned_object`. Severity mapping
+exists per rule, and `GET /api/v1/rules/status` reports which rules can actually
+fire on this host.
+
+Still missing: conditional policies (time-of-day windows, confidence floors) and
+channels beyond MQTT (webhook, email, Slack). `M`
 
 ### 3.9 Re-ID confidence fusion — **naive**
 
@@ -242,12 +254,36 @@ identity claims this is not defensible. Fuse appearance with temporal
 plausibility, camera topology, and direction; return evidence, not a bare
 boolean. `M`
 
-### 3.10 Camera calibration — **placeholder**
+### 3.10 Camera calibration — **explicit, and now gates speed claims**
 
-Audit result: `speed_height_analysis.py:39` uses a single scalar
-`calibration_factor = 0.05` m/px for the entire frame. That ignores perspective
-entirely, so "speed violation" is not a defensible km/h claim. Needs homography
-/ ground-plane calibration per camera. `M–L`
+Audit result: `speed_height_analysis.py` used a single global
+`calibration_factor = 0.05` m/px for every camera, applied with no perspective
+correction and never measured for any specific deployment. A km/h figure built
+on it is fabricated, not approximate.
+
+Resolved by making the unknown explicit rather than papering over it.
+`calibration.py` resolves calibration **per camera** from a
+`camera_calibration` config block (either `meters_per_pixel` directly, or a
+reference object of known real width and its pixel width). A camera without an
+entry is `is_calibrated == False`, and the `speed_violation` rule declines to
+fire, reporting its reason through `GET /api/v1/rules/calibration`.
+
+Two deliberate limits remain, documented rather than hidden:
+
+* A scalar m/px is still a flat-ground approximation — objects far from the
+  camera cover fewer pixels per metre. The rule therefore requires a
+  configurable margin (default 1.25x) over the limit before firing, absorbing
+  roughly +/-25% of that error.
+* Full homography per camera is the correct fix and is the remaining work
+  here. `M`
+
+Two further defects found while wiring this: the coordinator minted a fresh
+object id per detection *per frame*, so the analyzer's position history could
+never accumulate and every `speed_mps` was structurally `0.0` while `tracks`
+leaked one dead entry per detection per frame; and `cleanup_old_tracks()`
+compared frame timestamps against `time.time()`, evicting every track on the
+frame it was created whenever footage was replayed. Both are fixed and pinned
+by tests.
 
 ### 3.11 Face anti-spoofing — **not started**
 
