@@ -2173,26 +2173,73 @@ class TestPerceptionStagesStayHonest:
 class TestPerceptionKeepsNoPersistentAppearanceData:
     """Appearance data is re-identifying; persisting it creates an obligation.
 
-    The perception layer is currently in-memory only, which is why the
-    retention policy did not need extending to ship the CPU phase. If that
-    ever changes, retention must change in the same commit - so this test
-    fails the moment perception learns to write to disk.
+    Phase 2 shipped with perception entirely in memory, and this class held a
+    tripwire that failed the moment it learned to write to disk. Phase 6 (memory)
+    crossed that line deliberately - so the tripwire did its job and has been
+    converted into the stricter guarantee it was always demanding: **every
+    perception table that persists data must be covered by a retention policy.**
+
+    The list is explicit rather than discovered, so adding a table without
+    adding its expiry fails here.
     """
 
-    def test_perception_layer_does_not_write_to_the_database(self):
+    #: Perception tables allowed to persist, each with the retention key that
+    #: expires it. A new table must be added to BOTH or this test fails.
+    PERSISTED_TABLES = {
+        "perception_observations": "perception_observations_days",
+        "perception_appearances": "perception_appearances_days",
+        "perception_tracks": "perception_appearances_days",
+    }
+
+    def test_only_the_memory_module_persists_anything(self):
+        """Storage stays in one auditable place.
+
+        If descriptors could be written from five different modules, no
+        reviewer could confirm they all expire. Confining writes to memory.py
+        is what makes the retention guarantee checkable at all.
+        """
         import re
         pkg = PROJECT_ROOT / "backend" / "services" / "perception"
+        allowed = {"memory.py"}
         offenders = []
         for path in sorted(pkg.glob("*.py")):
+            if path.name in allowed:
+                continue
             src = path.read_text(encoding="utf-8")
-            if re.search(r"INSERT\s+INTO|UPDATE\s+\w+\s+SET|sqlite3|get_db|"
-                         r"event_store|\.commit\(\)", src, re.IGNORECASE):
+            if re.search(r"INSERT\s+INTO|UPDATE\s+\w+\s+SET|sqlite3\.connect|"
+                         r"CREATE\s+TABLE", src, re.IGNORECASE):
                 offenders.append(path.name)
         assert not offenders, (
-            f"{offenders} now persist perception data. Appearance attributes "
-            "and OCR text are re-identifying: extend backend/services/"
-            "management/retention.py in this same change, then update this "
-            "test.")
+            f"{offenders} write to the database directly. Route persistence "
+            "through backend/services/perception/memory.py so every table "
+            "stays covered by a retention policy.")
+
+    def test_every_persisted_table_has_a_retention_policy(self):
+        from backend.services.management.retention import _DEFAULTS
+        import inspect
+        from backend.services.management import retention as retention_module
+
+        source = inspect.getsource(retention_module.run_retention_once)
+        for table, policy_key in self.PERSISTED_TABLES.items():
+            assert policy_key in _DEFAULTS, \
+                f"{table} has no retention default ({policy_key})"
+            assert table in source, \
+                (f"{table} is never purged by run_retention_once - "
+                 "re-identifying data would accumulate forever")
+
+    def test_every_perception_table_created_is_declared_here(self):
+        """A new table must not slip in without an expiry."""
+        import re
+        src = (PROJECT_ROOT / "backend" / "services" / "perception"
+               / "memory.py").read_text(encoding="utf-8")
+        created = set(re.findall(
+            r"CREATE TABLE IF NOT EXISTS\s+(\w+)", src))
+        # FTS mirrors of an already-covered table carry no independent data.
+        created = {t for t in created if not t.endswith("_fts")}
+        undeclared = created - set(self.PERSISTED_TABLES)
+        assert not undeclared, (
+            f"{undeclared} are created but have no declared retention policy. "
+            "Add them to PERSISTED_TABLES and to retention.py.")
 
     def test_track_and_attribute_history_are_bounded(self):
         """Memory-only is not a licence to grow without limit."""
@@ -2222,3 +2269,588 @@ class TestPerceptionKeepsNoPersistentAppearanceData:
         assert GRID <= 32, "the signature must stay a thumbnail, not a frame"
         assert baseline.signature is None
         assert baseline.signature_baseline is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 6 — Memory: everything perceived, retrievable later
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAppearanceDescriptors:
+    """The vector that makes "find this person" possible."""
+
+    def _person_crop(self, top=(200, 40, 40), bottom=(40, 40, 200), size=(96, 48)):
+        import numpy as np
+        img = np.zeros((size[0], size[1], 3), dtype=np.uint8)
+        img[: size[0] // 2] = top
+        img[size[0] // 2:] = bottom
+        return img
+
+    def _shift(self, img, gain, warm):
+        import numpy as np
+        out = img.astype(np.float32) * gain
+        out[:, :, 2] *= warm
+        out[:, :, 0] /= warm
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    def test_descriptor_has_the_declared_dimension_and_is_unit_norm(self):
+        import numpy as np
+        from backend.services.perception import DESCRIPTOR_DIM, describe
+        d = describe(self._person_crop())
+        assert d is not None
+        assert len(d) == DESCRIPTOR_DIM
+        assert abs(float(np.linalg.norm(d)) - 1.0) < 1e-5
+
+    def test_unusable_crops_return_none_not_a_zero_vector(self):
+        """A zero vector would match everything; None means "not observed"."""
+        import numpy as np
+        from backend.services.perception import describe
+        assert describe(None) is None
+        assert describe(np.zeros((0, 0, 3), dtype=np.uint8)) is None
+        assert describe(np.zeros((8, 4, 3), dtype=np.uint8)) is None, \
+            "a crop below the minimum size must not yield a descriptor"
+        assert describe(np.zeros((40, 20), dtype=np.uint8)) is None
+
+    def test_same_appearance_scores_higher_than_different(self):
+        from backend.services.perception import describe, similarity
+        a = describe(self._person_crop())
+        b = describe(self._person_crop())
+        c = describe(self._person_crop(top=(40, 200, 40), bottom=(200, 200, 40)))
+        assert similarity(a, b) > similarity(a, c)
+        assert similarity(a, b) > 0.95
+
+    def test_colour_constancy_survives_a_lighting_change(self):
+        """The measurement that decided the design.
+
+        Without grey-world normalisation a colour histogram collapses from 96%
+        to 20% rank-1 the moment the camera changes - which is precisely the
+        cross-camera case this whole phase exists to serve. If this regresses,
+        cross-camera search becomes a false promise, so it is pinned here.
+        """
+        from backend.services.perception import describe, similarity
+        original = self._person_crop()
+        harsh = self._shift(original, 0.55, 1.3)
+
+        with_cc = similarity(describe(original, colour_constancy=True),
+                             describe(harsh, colour_constancy=True))
+        without_cc = similarity(describe(original, colour_constancy=False),
+                                describe(harsh, colour_constancy=False))
+        assert with_cc > 0.9, \
+            f"colour constancy must survive a lighting shift (got {with_cc:.3f})"
+        assert with_cc > without_cc, \
+            "grey-world normalisation must beat the raw histogram under a shift"
+
+    def test_average_is_renormalised(self):
+        import numpy as np
+        from backend.services.perception import average, describe
+        crops = [self._person_crop(), self._person_crop(top=(190, 45, 45))]
+        mean = average([describe(c) for c in crops])
+        assert mean is not None
+        assert abs(float(np.linalg.norm(mean)) - 1.0) < 1e-5
+        assert average([]) is None
+        assert average([None, None]) is None
+
+    def test_a_match_is_never_an_identification(self):
+        """Colour layout is not a biometric, and the type system says so."""
+        from backend.services.perception import MatchResult
+        m = MatchResult(key="1:1", similarity=0.999, strength="strong")
+        assert m.is_identification is False
+        assert m.to_dict()["is_identification"] is False
+
+
+class TestPerceptionMemory:
+    """Durable storage of observations, appearances and tracks."""
+
+    def _memory(self, tmp_path):
+        from backend.services.perception import PerceptionMemory
+        return PerceptionMemory(db_path=str(tmp_path / "mem.db"))
+
+    def _observation(self, kind="dwell", camera_id=1, ts=None, conf=0.8):
+        from backend.services.perception import Observation
+        return Observation(
+            kind=kind, summary=f"person loitering near the loading bay",
+            camera_id=camera_id, timestamp=ts or time.time(), confidence=conf,
+            source="temporal_engine", track_ids=[7],
+            evidence=["duration 143s (threshold 30s)", "displacement 12px"])
+
+    def test_observations_survive_a_restart(self, tmp_path):
+        """The whole point: perception that evaporates answers nothing later."""
+        from backend.services.perception import PerceptionMemory
+        path = str(tmp_path / "mem.db")
+        first = PerceptionMemory(db_path=path)
+        first.remember_observation(self._observation())
+        # A completely fresh instance, as after a process restart.
+        second = PerceptionMemory(db_path=path)
+        rows = second.query_observations()
+        assert len(rows) == 1
+        assert rows[0].evidence, "evidence must survive persistence"
+        assert rows[0].track_ids == [7]
+
+    def test_query_filters_compose(self, tmp_path):
+        mem = self._memory(tmp_path)
+        now = time.time()
+        mem.remember_observation(self._observation("dwell", 1, now - 10))
+        mem.remember_observation(self._observation("pacing", 2, now - 20))
+        mem.remember_observation(self._observation("dwell", 2, now - 8000))
+
+        assert len(mem.query_observations(camera_id=2)) == 2
+        assert len(mem.query_observations(kinds=["dwell"])) == 2
+        assert len(mem.query_observations(camera_id=2, kinds=["dwell"])) == 1
+        assert len(mem.query_observations(since=now - 100)) == 2
+
+    def test_full_text_search_finds_by_words_and_evidence(self, tmp_path):
+        mem = self._memory(tmp_path)
+        mem.remember_observation(self._observation())
+        assert len(mem.search_observations("loading")) == 1
+        assert len(mem.search_observations("bay")) == 1
+        assert len(mem.search_observations("helicopter")) == 0
+
+    def test_malformed_search_text_does_not_raise(self, tmp_path):
+        """Search text is user input; an FTS syntax error must not 500."""
+        mem = self._memory(tmp_path)
+        mem.remember_observation(self._observation())
+        for bad in ('"unclosed', "AND OR", "*", "((", 'NEAR/"'):
+            assert isinstance(mem.search_observations(bad), list)
+
+    def test_appearance_round_trips_through_the_database(self, tmp_path):
+        import numpy as np
+        from backend.services.perception import similarity
+        mem = self._memory(tmp_path)
+        v = np.asarray(np.random.default_rng(3).random(96), dtype="float32")
+        v /= np.linalg.norm(v)
+        mem.remember_appearance(1, 5, v, time.time() - 10, time.time(), 20)
+
+        stored = mem.get_appearance("1:5")
+        assert stored is not None
+        assert similarity(stored.descriptor, v) > 0.9999, \
+            "the stored vector must be the vector that went in"
+
+    def test_appearance_upsert_does_not_duplicate(self, tmp_path):
+        import numpy as np
+        mem = self._memory(tmp_path)
+        v = np.ones(96, dtype="float32") / 9.79795897
+        mem.remember_appearance(1, 5, v, 100.0, 200.0, 10)
+        mem.remember_appearance(1, 5, v, 100.0, 300.0, 25)
+        assert mem.count("appearances") == 1
+        assert mem.get_appearance("1:5").frame_count == 25
+
+    def test_vector_search_ranks_by_similarity(self, tmp_path):
+        import numpy as np
+        mem = self._memory(tmp_path)
+        rng = np.random.default_rng(11)
+
+        def unit(x):
+            x = np.asarray(x, dtype="float32")
+            return x / np.linalg.norm(x)
+
+        target = unit(rng.random(96))
+        mem.remember_appearance(1, 1, target, 1.0, 2.0, 5)
+        mem.remember_appearance(1, 2, unit(target + 0.05 * rng.random(96)), 1.0, 2.0, 5)
+        mem.remember_appearance(1, 3, unit(rng.random(96)), 1.0, 2.0, 5)
+
+        hits = mem.search_appearance_vectors(target, limit=3)
+        assert hits[0][0] == "1:1"
+        assert hits[0][1] > hits[-1][1]
+
+    def test_mismatched_descriptor_dimensions_do_not_silently_return_nothing(
+            self, tmp_path):
+        """A dimension clash means two backends, not "no matches"."""
+        import numpy as np
+        mem = self._memory(tmp_path)
+        mem.remember_appearance(1, 1, np.ones(96, dtype="float32") / 9.798,
+                                1.0, 2.0, 5)
+        result = mem.search_appearance_vectors(np.ones(512, dtype="float32"))
+        assert result == []      # refuses rather than comparing nonsense
+
+    def test_report_warns_before_brute_force_gets_slow(self, tmp_path):
+        from backend.services.perception import SqliteVectorStore
+        mem = self._memory(tmp_path)
+        report = mem.report()
+        assert report["vector_backend"]["backend"] == "sqlite"
+        assert "warning" not in report["vector_backend"], \
+            "an empty store must not warn"
+        assert SqliteVectorStore.SCALE_WARNING_AT <= 50_000, \
+            "the warning must fire before a query exceeds ~200 ms"
+
+    def test_qdrant_is_not_claimed_without_a_live_server(self, tmp_path):
+        """config says qdrant.enabled=true; nothing is listening.
+
+        Trusting that flag is the same defect as a capability registry that
+        advertises an OCR engine it cannot run. The backend must be decided by
+        connecting, not by reading config.
+        """
+        from backend.config.config import get_config
+        from backend.services.perception import QdrantVectorStore
+        mem = self._memory(tmp_path)
+        assert getattr(get_config().qdrant, "enabled", False) is True, \
+            "this test is meaningless if config no longer claims qdrant"
+        assert mem.vectors().name == "sqlite", \
+            "must fall back to SQLite when no Qdrant server answers"
+
+        # The choice must come from a real connection attempt, not from
+        # hard-coding SQLite: if try_connect() were removed, a deployment that
+        # DOES run Qdrant would silently keep brute-forcing millions of rows.
+        assert QdrantVectorStore.try_connect() is None, \
+            "no server is running here, so the probe must return None"
+        probed = {"called": False}
+        original = QdrantVectorStore.try_connect
+
+        @classmethod
+        def spy(cls, *a, **k):
+            probed["called"] = True
+            return original(*a, **k)
+
+        QdrantVectorStore.try_connect = spy
+        try:
+            mem._vectors = None
+            assert mem.vectors().name == "sqlite"
+            assert probed["called"], \
+                "the vector backend must be chosen by probing for Qdrant"
+        finally:
+            QdrantVectorStore.try_connect = original
+
+
+class TestMemorySearch:
+    """The two questions Phase 6 was accepted against."""
+
+    def _memory(self, tmp_path):
+        from backend.services.perception import PerceptionMemory
+        return PerceptionMemory(db_path=str(tmp_path / "search.db"))
+
+    def _unit(self, rng):
+        import numpy as np
+        v = np.asarray(rng.random(96), dtype="float32")
+        return v / np.linalg.norm(v)
+
+    def test_find_this_person_across_cameras(self, tmp_path):
+        """Acceptance criterion 1."""
+        import numpy as np
+        from backend.services.perception import find_across_cameras
+        mem = self._memory(tmp_path)
+        rng = np.random.default_rng(5)
+        person = self._unit(rng)
+        now = time.time()
+
+        mem.remember_appearance(1, 10, person, now - 600, now - 500, 40)
+        mem.remember_appearance(2, 20,
+                                person + 0.01 * rng.random(96).astype("float32"),
+                                now - 380, now - 300, 35)
+        mem.remember_appearance(3, 30, self._unit(rng), now - 200, now - 100, 20)
+
+        out = find_across_cameras(1, 10, memory=mem, limit=5)
+        assert out["count"] >= 1
+        top = out["matches"][0]
+        assert top["camera_id"] == 2, "the matching appearance must rank first"
+        assert top["is_identification"] is False
+        assert out["caveat"]
+
+    def test_impossible_journeys_are_flagged_and_demoted(self, tmp_path):
+        """Two cameras seeing matching clothes at once means two people."""
+        import numpy as np
+        from backend.services.perception import find_across_cameras
+        mem = self._memory(tmp_path)
+        rng = np.random.default_rng(9)
+        person = self._unit(rng)
+        now = time.time()
+
+        mem.remember_appearance(1, 10, person, now - 600, now - 500, 40)
+        # Overlapping in time on another camera - cannot be the same entity.
+        mem.remember_appearance(2, 20, person, now - 590, now - 510, 30)
+        # Later, plausible.
+        mem.remember_appearance(3, 30, person, now - 300, now - 200, 30)
+
+        out = find_across_cameras(1, 10, memory=mem, limit=5)
+        assert out["matches"][0]["physically_plausible"] is True, \
+            "a plausible match must outrank an impossible one"
+        implausible = [m for m in out["matches"]
+                       if not m["physically_plausible"]]
+        assert implausible, "the overlapping sighting must still be reported"
+        assert implausible[0]["plausibility"], "with a reason"
+
+    def test_transit_plausibility_uses_distance_when_known(self):
+        from backend.services.perception import transit_plausibility
+        ok, why = transit_plausibility(120.0, 5000.0, "walk")
+        assert ok is False and "2500" in why
+        ok, why = transit_plausibility(120.0, 100.0, "walk")
+        assert ok is True
+        ok, why = transit_plausibility(60.0, 1000.0, "vehicle")
+        assert ok is True, "a vehicle covers 1 km in 60 s"
+
+    def test_plausibility_admits_when_it_could_not_check(self):
+        """Reporting an unperformed check as a pass would be a quiet lie."""
+        from backend.services.perception import transit_plausibility
+        ok, why = transit_plausibility(300.0, None)
+        assert ok is True
+        assert "no camera distances" in why
+
+    def test_what_happened_yesterday(self, tmp_path):
+        """Acceptance criterion 2."""
+        from backend.services.perception import Observation, recall
+        mem = self._memory(tmp_path)
+        now = time.time()
+        midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+
+        for ts, summary in ((midnight - 3600, "van stopped at the loading bay"),
+                            (midnight - 7200, "person near the loading bay"),
+                            (now - 60, "person in the car park")):
+            mem.remember_observation(Observation(
+                kind="dwell", summary=summary, camera_id=1, timestamp=ts,
+                confidence=0.7, evidence=["duration 60s"]))
+
+        yesterday = recall(when="yesterday", memory=mem)
+        assert yesterday["count"] == 2, "only yesterday's rows"
+        today = recall(when="today", memory=mem)
+        assert today["count"] == 1
+
+        combined = recall(text="loading bay", when="yesterday", memory=mem)
+        assert combined["count"] == 2
+        assert combined["query"]["period"] == "yesterday"
+
+    def test_recall_reports_how_many_results_are_grounded(self, tmp_path):
+        from backend.services.perception import Observation, recall
+        mem = self._memory(tmp_path)
+        mem.remember_observation(Observation(
+            kind="dwell", summary="grounded claim", camera_id=1,
+            confidence=0.8, evidence=["measured 40s"]))
+        mem.remember_observation(Observation(
+            kind="guess", summary="ungrounded claim", camera_id=1,
+            confidence=0.9, evidence=[]))
+        out = recall(memory=mem)
+        assert out["count"] == 2
+        assert out["grounded_count"] == 1, \
+            "an evidence-free row must not be counted as grounded"
+        assert "unsupported" in out["note"]
+
+    def test_summary_reads_as_a_sentence(self, tmp_path):
+        from backend.services.perception import Observation, summarise_period
+        mem = self._memory(tmp_path)
+        for _ in range(3):
+            mem.remember_observation(Observation(
+                kind="occupancy_anomaly", summary="unusually busy",
+                camera_id=1, confidence=0.7, evidence=["z=3.4"]))
+        out = summarise_period(camera_id=1, when="today", memory=mem)
+        assert "3" in out["narrative"]
+        assert "occupancy anomaly" in out["narrative"]
+
+    def test_empty_period_says_so(self, tmp_path):
+        from backend.services.perception import summarise_period
+        out = summarise_period(when="yesterday", memory=self._memory(tmp_path))
+        assert "Nothing was recorded" in out["narrative"]
+
+
+class TestMemoryRetentionIsEnforced:
+    """Appearance data is re-identifying; it must expire on its own clock."""
+
+    def test_perception_tables_are_in_the_retention_policy(self):
+        """The obligation this phase inherited from the last one.
+
+        Phase 2 shipped with no persistence and a test that fails the moment
+        perception writes to disk. Phase 6 writes to disk, so the retention
+        policy had to grow in the same change - this asserts it did.
+        """
+        from backend.services.management.retention import _DEFAULTS
+        assert "perception_observations_days" in _DEFAULTS
+        assert "perception_appearances_days" in _DEFAULTS
+        assert (_DEFAULTS["perception_appearances_days"]
+                < _DEFAULTS["perception_observations_days"]), \
+            ("re-identifying descriptors must expire sooner than the text "
+             "observations that cite them")
+
+    def test_retention_actually_deletes_expired_rows(self, tmp_path):
+        from backend.services.perception import Observation, PerceptionMemory
+        import numpy as np
+        mem = PerceptionMemory(db_path=str(tmp_path / "ret.db"))
+        now = time.time()
+        old, recent = now - 400 * 86400, now - 60
+
+        mem.remember_observation(Observation(
+            kind="dwell", summary="ancient", camera_id=1, timestamp=old,
+            confidence=0.8, evidence=["x"]))
+        mem.remember_observation(Observation(
+            kind="dwell", summary="recent", camera_id=1, timestamp=recent,
+            confidence=0.8, evidence=["x"]))
+        v = np.ones(96, dtype="float32") / 9.79795897
+        mem.remember_appearance(1, 1, v, old, old, 5)
+        mem.remember_appearance(1, 2, v, recent, recent, 5)
+
+        removed = mem.purge_expired(observation_days=60, appearance_days=7)
+        assert removed["observations"] == 1
+        assert removed["appearances"] == 1
+        assert mem.count("observations") == 1
+        assert mem.count("appearances") == 1
+
+    def test_a_wrong_retention_column_raises_instead_of_logging(self, tmp_path):
+        """A purge that silently deletes nothing is worse than none at all.
+
+        Found in this codebase: `anomalies` and `license_plates` were purged on
+        a `timestamp` column that neither table has, so plate reads accumulated
+        forever behind a swallowed log line.
+        """
+        import sqlite3
+        from backend.services.management.retention import (RetentionPolicyError,
+                                                           _purge_table)
+        conn = sqlite3.connect(str(tmp_path / "r.db"))
+        conn.execute("CREATE TABLE license_plates (id INTEGER, detected_at TEXT)")
+        with pytest.raises(RetentionPolicyError):
+            _purge_table(conn, "license_plates", "timestamp", 30)
+        conn.close()
+
+    def test_real_retention_pass_covers_every_table_without_error(self):
+        """The regression guard for the column-name defect."""
+        from backend.services.management.retention import run_retention_once
+        results = run_retention_once()
+        for table in ("anomalies", "license_plates", "perception_observations",
+                      "perception_appearances"):
+            assert table in results, f"{table} is not covered by retention"
+
+
+class TestMemoryPipelineIntegration:
+    """Memory must be wired into the live pipeline, not sit beside it."""
+
+    def _pipeline(self, tmp_path, **kw):
+        from backend.services.perception import PerceptionMemory
+        import backend.services.perception.memory as memory_module
+        from backend.services.perception import PerceptionPipeline
+        memory_module._MEMORY = PerceptionMemory(
+            db_path=str(tmp_path / "pipe.db"))
+        return PerceptionPipeline(**kw), memory_module._MEMORY
+
+    def _frame(self):
+        import numpy as np
+        rng = np.random.default_rng(2)
+        return rng.integers(0, 255, (240, 320, 3), dtype=np.uint8)
+
+    def test_descriptors_are_rate_limited_per_track(self, tmp_path):
+        """Consecutive frames of one person are near-identical; sampling
+        every frame costs 25x more for no extra discrimination."""
+        pipeline, _ = self._pipeline(tmp_path, descriptor_interval_s=1.0)
+        frame = self._frame()
+        base = time.time()
+        for i in range(20):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [50, 50, 90, 170], "track_id": 1}],
+                             frame, base + i * 0.1)
+        samples = len(pipeline._descriptors.get((1, 1), []))
+        assert 1 <= samples <= 3, \
+            f"2 seconds at 1 Hz should sample ~2 descriptors, got {samples}"
+
+    def test_descriptor_accumulation_is_bounded(self, tmp_path):
+        """A camera watching a doorway all day must not grow without limit."""
+        pipeline, _ = self._pipeline(tmp_path, descriptor_interval_s=0.0)
+        frame = self._frame()
+        base = time.time()
+        for i in range(120):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [50, 50, 90, 170], "track_id": 1}],
+                             frame, base + i)
+        assert len(pipeline._descriptors[(1, 1)]) <= 32
+
+    def test_actionable_observations_reach_the_database(self, tmp_path):
+        pipeline, mem = self._pipeline(tmp_path)
+        from backend.services.perception import Observation
+        pipeline._persist_observations(1, [
+            Observation(kind="dwell", summary="grounded", camera_id=1,
+                        confidence=0.8, evidence=["measured"]),
+            Observation(kind="guess", summary="ungrounded", camera_id=1,
+                        confidence=0.95, evidence=[]),
+        ])
+        stored = mem.query_observations()
+        assert len(stored) == 1, \
+            "an unsupported claim must not be stored as recorded fact"
+        assert stored[0].summary == "grounded"
+
+    def test_retired_tracks_persist_their_appearance(self, tmp_path):
+        """Retirement is the last moment the track exists in RAM."""
+        pipeline, mem = self._pipeline(tmp_path, descriptor_interval_s=0.0)
+        frame = self._frame()
+        base = time.time()
+        for i in range(6):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [50, 50, 90, 170], "track_id": 1}],
+                             frame, base + i * 0.3)
+        # Jump far enough ahead that the track is declared lost.
+        pipeline._retire_if_due(base + 1000, interval_s=0.0)
+        assert mem.count("appearances") >= 1, \
+            "a retired track's appearance must survive it"
+        assert mem.count("tracks") >= 1
+
+    def test_memory_can_be_disabled(self, tmp_path):
+        pipeline, mem = self._pipeline(tmp_path, enable_memory=False)
+        frame = self._frame()
+        base = time.time()
+        for i in range(5):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [50, 50, 90, 170], "track_id": 1}],
+                             frame, base + i)
+        assert pipeline.stats()["memory"]["enabled"] is False
+        assert mem.count("observations") == 0
+
+    def test_pipeline_survives_an_unwritable_memory(self, tmp_path):
+        """A storage failure must degrade recall, not stop the frame."""
+        from backend.services.perception import PerceptionPipeline
+        import backend.services.perception.memory as memory_module
+
+        class Broken:
+            def remember_observation(self, *a, **k):
+                raise RuntimeError("disk full")
+            def remember_appearance(self, *a, **k):
+                raise RuntimeError("disk full")
+            def remember_track(self, *a, **k):
+                raise RuntimeError("disk full")
+
+        original = memory_module._MEMORY
+        try:
+            memory_module._MEMORY = Broken()
+            pipeline = PerceptionPipeline()
+            result = pipeline.process(
+                1, [{"class_name": "person", "confidence": 0.9,
+                     "bbox": [10, 10, 50, 130], "track_id": 1}], self._frame())
+            assert result is not None
+        finally:
+            memory_module._MEMORY = original
+
+
+class TestDocumentedApiSurfaceMatchesReality:
+    """Endpoint counts in the README must be introspected, never guessed."""
+
+    def test_readme_route_counts_are_accurate(self):
+        from backend.api.main import app
+        ops = set()
+        for route in app.routes:
+            methods = getattr(route, "methods", None)
+            if methods:
+                for m in methods - {"HEAD", "OPTIONS"}:
+                    ops.add((route.path, m))
+        v1 = {o for o in ops if o[0].startswith("/api/v1")}
+
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        assert f"{len(ops)} registered routes" in readme, \
+            f"README must state {len(ops)} registered routes"
+        assert f"{len(v1)} under `/api/v1`" in readme, \
+            f"README must state {len(v1)} operations under /api/v1"
+
+    def test_readme_protected_count_is_accurate(self):
+        import inspect
+        from backend.api.main import app
+        public = 0
+        total = 0
+        for route in app.routes:
+            methods = getattr(route, "methods", None)
+            if not methods or not route.path.startswith("/api/v1"):
+                continue
+            for _ in methods - {"HEAD", "OPTIONS"}:
+                total += 1
+                src = ""
+                if hasattr(route, "endpoint"):
+                    try:
+                        src = inspect.getsource(route.endpoint)
+                    except (OSError, TypeError):
+                        src = ""
+                guarded = bool(getattr(route, "dependencies", [])) or \
+                    "require_role" in src or "get_current_user" in src
+                if not guarded:
+                    public += 1
+
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        assert f"**{total - public} require a token and {public} are public**" \
+            in readme, (f"README must state {total - public} protected and "
+                        f"{public} public /api/v1 operations")

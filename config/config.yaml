@@ -21,6 +21,11 @@ retention:
   # pass by evicting the oldest files first. Time-based expiry alone cannot
   # bound disk usage inside the window. Set 0 to disable.
   snapshots_max_mb: 2048
+  # Perception memory (Phase 6). Appearance descriptors are re-identifying and
+  # expire quickly; the observations that cite them are text and are kept
+  # longer for investigation.
+  perception_observations_days: 60
+  perception_appearances_days: 7
 
 # Cross-Camera Tracking Configuration
 cross_camera_tracker:

@@ -302,6 +302,12 @@ class RetentionConfig(BaseModel):
     # Hard disk ceiling for snapshots, enforced independently of the time
     # window (a busy camera reaches ~130 GB before 30 days elapse). 0 disables.
     snapshots_max_mb: int = 2048
+    # Perception memory (Phase 6). Appearance descriptors are re-identifying -
+    # a clothing-colour vector locates a person again as surely as a face
+    # embedding - so they expire far sooner than the observations that cite
+    # them. Observations are text and outlive the vectors deliberately.
+    perception_observations_days: int = 60
+    perception_appearances_days: int = 7
 
 
 class Config(BaseModel):

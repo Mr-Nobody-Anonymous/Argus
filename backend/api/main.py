@@ -1304,6 +1304,87 @@ async def get_perception_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/memory/recall", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def memory_recall(text: Optional[str] = None,
+                        camera_id: Optional[int] = None,
+                        when: Optional[str] = None,
+                        kind: Optional[str] = None,
+                        min_confidence: float = 0.0,
+                        limit: int = 100):
+    """"What happened near the loading bay yesterday?"
+
+    Free text searches observation summaries and their evidence; `when`
+    accepts today / yesterday / last_hour / last_week / 24h. Every result
+    carries the evidence behind it, and the response reports how many are
+    grounded so an empty-evidence claim cannot pass as a finding.
+    """
+    try:
+        from backend.services.perception import recall
+        kinds = [k.strip() for k in kind.split(",")] if kind else None
+        return recall(text=text, camera_id=camera_id, when=when, kinds=kinds,
+                      min_confidence=min_confidence, limit=min(int(limit), 500))
+    except Exception as e:
+        logger.error(f"Memory recall failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/memory/summary", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def memory_summary(camera_id: Optional[int] = None,
+                         when: str = "today"):
+    """A plain-language digest of a period - the shift-handover answer."""
+    try:
+        from backend.services.perception import summarise_period
+        return summarise_period(camera_id=camera_id, when=when)
+    except Exception as e:
+        logger.error(f"Memory summary failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/memory/appearances/{camera_id}/{track_id}/similar",
+         response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def memory_find_across_cameras(camera_id: int, track_id: int,
+                                     limit: int = 10):
+    """"Where else has this person been?"
+
+    Ranked by appearance similarity, annotated with whether the journey was
+    physically possible in the time available. Results are **candidates for
+    review, never identifications**: the descriptor compares clothing colour
+    layout, so two people dressed alike match strongly. The caveat travels
+    with the payload rather than living only in the docs.
+    """
+    try:
+        from backend.services.perception import find_across_cameras
+        result = find_across_cameras(camera_id, track_id,
+                                     limit=min(int(limit), 50))
+        if result.get("error"):
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Cross-camera search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/memory/stats", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def memory_stats():
+    """What is stored, which vector backend is live, and its measured limits.
+
+    Reports the SQLite brute-force backend honestly, including a warning once
+    the descriptor table grows past the point where a scan exceeds ~100 ms.
+    """
+    try:
+        from backend.services.perception import get_memory
+        return get_memory().report()
+    except Exception as e:
+        logger.error(f"Memory stats failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/metrics", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_metrics():
     """Get system metrics"""

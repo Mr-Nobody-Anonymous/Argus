@@ -29,7 +29,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .adapters import infer_spatial_relationships, scene_from_detections
 from .change import ChangeDetector
@@ -82,7 +82,9 @@ class PerceptionPipeline:
                  enable_change_detection: bool = True,
                  enable_rich_relationships: bool = True,
                  enable_text: bool = False,
-                 text_interval_s: float = 2.0):
+                 text_interval_s: float = 2.0,
+                 enable_memory: bool = True,
+                 descriptor_interval_s: float = 1.0):
         self.tracks = TrackStore()
         self.graph = SceneGraph()
         self.change = ChangeDetector()
@@ -100,6 +102,14 @@ class PerceptionPipeline:
         self._last_retire = 0.0
         self._last_text: Dict[int, float] = {}
         self._stage_ms: Dict[str, float] = {}
+        # Perception is worthless if it evaporates on restart, so observations
+        # and appearances are written through to durable memory.
+        self.enable_memory = enable_memory
+        self.descriptor_interval_s = descriptor_interval_s
+        self._last_descriptor: Dict[Tuple[int, int], float] = {}
+        self._descriptors: Dict[Tuple[int, int], List[Any]] = {}
+        self._persisted_observations = 0
+        self._persisted_appearances = 0
 
     # -- main entry point -----------------------------------------------------
 
@@ -121,6 +131,14 @@ class PerceptionPipeline:
             with self._stage("attributes"):
                 from .attributes import enrich_scene
                 enrich_scene(scene, frame)
+
+        # Appearance descriptors, rate-limited per track: the vector that
+        # makes "find this person" possible later. Sampling once a second is
+        # enough - consecutive frames of one person are near-identical, so
+        # every frame would cost 25x more for no extra discrimination.
+        if self.enable_memory and frame is not None:
+            with self._stage("descriptors"):
+                self._collect_descriptors(camera_id, scene, frame, ts)
 
         # Environment context: what the whole frame looks like. Runs before
         # the per-entity work so downstream stages can read the lighting and
@@ -181,6 +199,13 @@ class PerceptionPipeline:
         # deployment-wide fact and re-scanning every track each frame is waste.
         observations.extend(self._retire_if_due(ts))
 
+        # Write through to durable memory. Only actionable observations are
+        # stored: an unsupported claim is not worth the disk, and storing it
+        # would let it resurface later looking like recorded fact.
+        if self.enable_memory and observations:
+            with self._stage("memory"):
+                self._persist_observations(camera_id, observations)
+
         with self._lock:
             self._frame_counts[camera_id] = self._frame_counts.get(camera_id, 0) + 1
 
@@ -188,6 +213,102 @@ class PerceptionPipeline:
             scene=scene, tracks=touched, observations=observations,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
+
+    def _collect_descriptors(self, camera_id: int, scene, frame,
+                             now: float) -> int:
+        """Sample appearance descriptors for tracked entities."""
+        from .descriptors import DIM, average, describe
+
+        collected = 0
+        for entity in scene.entities:
+            if entity.track_id is None or entity.bbox is None:
+                continue
+            # Only people are worth re-identifying by clothing colour; a
+            # descriptor of a car's colour bands is not discriminative.
+            if entity.kind != "person":
+                continue
+            key = (camera_id, entity.track_id)
+            with self._lock:
+                last = self._last_descriptor.get(key, 0.0)
+                if now - last < self.descriptor_interval_s:
+                    continue
+                self._last_descriptor[key] = now
+
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, int(entity.bbox.x1)), max(0, int(entity.bbox.y1))
+            x2, y2 = min(w, int(entity.bbox.x2)), min(h, int(entity.bbox.y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            vector = describe(frame[y1:y2, x1:x2])
+            if vector is None:
+                continue
+            with self._lock:
+                bucket = self._descriptors.setdefault(key, [])
+                bucket.append(vector)
+                # Cap the accumulation: the mean of 32 samples is already
+                # stable, and an unbounded list is a slow memory leak on a
+                # camera watching a doorway all day.
+                if len(bucket) > 32:
+                    del bucket[0]
+            collected += 1
+        return collected
+
+    def _persist_observations(self, camera_id: int, observations) -> int:
+        from .memory import get_memory
+        memory = get_memory()
+        written = 0
+        for obs in observations:
+            if not obs.is_actionable:
+                continue
+            try:
+                memory.remember_observation(obs, camera_id=camera_id)
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Could not persist observation: {exc}")
+        with self._lock:
+            self._persisted_observations += written
+        return written
+
+    def _persist_track(self, track) -> bool:
+        """Store a retired track's identity and mean appearance."""
+        from .descriptors import active_backend, average
+        from .memory import get_memory
+
+        camera_id = track.cameras_seen[-1] if track.cameras_seen else 0
+        key = (camera_id, track.track_id)
+        with self._lock:
+            vectors = self._descriptors.pop(key, [])
+            self._last_descriptor.pop(key, None)
+
+        memory = get_memory()
+        try:
+            attributes = {name: {"value": a.value, "confidence": a.confidence,
+                                 "source": a.source}
+                          for name, a in track.attributes.items()}
+            memory.remember_track(
+                camera_id=camera_id, track_id=track.track_id,
+                category=track.category, first_seen=track.first_seen,
+                last_seen=track.last_seen, frame_count=track.frame_count,
+                summary=f"{track.category} {track.track_id}",
+                attributes=attributes)
+
+            mean = average(vectors)
+            if mean is None:
+                return False
+            memory.remember_appearance(
+                camera_id=camera_id, track_id=track.track_id, descriptor=mean,
+                first_seen=track.first_seen, last_seen=track.last_seen,
+                frame_count=track.frame_count, category=track.category,
+                backend=active_backend(),
+                attributes={"samples": len(vectors),
+                            "colour": track.get("dominant_colour")
+                            if hasattr(track, "get") else None})
+            with self._lock:
+                self._persisted_appearances += 1
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Could not persist track {track.track_id}: {exc}")
+            return False
 
     @contextmanager
     def _stage(self, name: str):
@@ -232,6 +353,11 @@ class PerceptionPipeline:
                 if obs is not None:
                     track.add_observation(obs)
                     out.append(obs)
+                # Retirement is the last moment this track exists in RAM. If
+                # its appearance is not written now it is lost forever, and
+                # cross-camera search would only ever see live tracks.
+                if self.enable_memory:
+                    self._persist_track(track)
             self.graph.prune(now)
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"Retirement sweep failed: {exc}")
@@ -262,12 +388,19 @@ class PerceptionPipeline:
             "observations": sum(len(t.observations) for t in active),
             "stage_ms": {k: round(v, 3) for k, v in sorted(self._stage_ms.items())},
             "change_baselines": self.change.report()["cameras"],
+            "memory": {
+                "enabled": self.enable_memory,
+                "observations_written": self._persisted_observations,
+                "appearances_written": self._persisted_appearances,
+                "tracks_accumulating_descriptors": len(self._descriptors),
+            },
             "stages_enabled": {
                 "attributes": self.enable_attributes,
                 "scene_context": self.enable_scene_context,
                 "change_detection": self.enable_change_detection,
                 "rich_relationships": self.enable_rich_relationships,
                 "text": self.enable_text,
+                "memory": self.enable_memory,
             },
         }
 
@@ -291,6 +424,10 @@ class PerceptionPipeline:
             self._frame_counts.clear()
             self._last_text.clear()
             self._stage_ms.clear()
+            self._last_descriptor.clear()
+            self._descriptors.clear()
+            self._persisted_observations = 0
+            self._persisted_appearances = 0
 
 
 _PIPELINE: Optional[PerceptionPipeline] = None

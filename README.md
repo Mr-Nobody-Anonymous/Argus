@@ -469,11 +469,11 @@ Field notes: the class label key is **`class`** (not `class_name`), `bbox` is an
 
 ## 📊 API Reference
 
-**57 addressable operations**: 56 in the OpenAPI schema (49 under `/api/v1`,
-3 streaming, plus `GET /`, `GET /api`, `/docs`, `/redoc`, `/openapi.json`) and
-1 WebSocket route, with `GET /metrics` served outside the schema.
+**63 addressable operations**: 59 registered routes (53 under `/api/v1`, plus
+`GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
+`/metrics`), 3 streaming routes and 1 WebSocket route.
 
-Of the 49 `/api/v1` operations, **46 require a token and 3 are public**.
+Of the 53 `/api/v1` operations, **50 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 
@@ -584,6 +584,29 @@ available, each unavailable one naming the reason and the remedy — for example
 `ocr` explains that `tesseract` is missing *and* that text regions are still
 being detected without it.
 
+### Memory & Search
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/memory/recall` | viewer | *"What happened near the loading bay yesterday?"* — free text over observations and their evidence, filterable by `camera_id`, `kind`, `when`, `min_confidence` |
+| `GET` | `/api/v1/memory/summary` | viewer | Plain-language digest of a period — the shift-handover answer |
+| `GET` | `/api/v1/memory/appearances/{camera_id}/{track_id}/similar` | viewer | *"Where else has this person been?"* — ranked by appearance, annotated with travel-time plausibility |
+| `GET` | `/api/v1/memory/stats` | viewer | What is stored, which vector backend is live, and its measured limits |
+
+`when` accepts `today`, `yesterday`, `last_hour`, `last_week`, `24h`.
+
+**Appearance matches are candidates for review, never identifications.** The
+descriptor compares clothing colour layout in three bands, so two people
+dressed alike match strongly. Every result carries `is_identification: false`
+and the caveat travels in the payload rather than living only in these docs.
+Matches are also checked for physical plausibility — two cameras seeing
+matching clothes *at the same moment* is evidence of two people, and that is
+reported rather than hidden.
+
+Vector search uses exact brute-force cosine in SQLite (measured: 5 ms at 1k
+vectors, 37 ms at 10k, 207 ms at 50k). Qdrant is used automatically **if a
+server actually answers** — never because `config.yaml` says `enabled: true`.
+Past ~25 000 vectors `/memory/stats` warns you to run it.
+
 ### Streaming
 | Endpoint | Type | Role | Description |
 |----------|------|------|-------------|
@@ -660,7 +683,7 @@ scan, a gitignore-hygiene check, and a frontend build. See
 
 | Suite | Tests | Guards against |
 |---|---|---|
-| `tests/test_regression.py` | 148 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning, change-detection baseline maturity and hour-of-day separation, single-frame vs behavioural relationship claims, unread-text honesty, evidence grounding, perception persistence and memory bounds |
+| `tests/test_regression.py` | 184 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning, change-detection baseline maturity and hour-of-day separation, single-frame vs behavioural relationship claims, unread-text honesty, evidence grounding, perception persistence and memory bounds, appearance-descriptor colour constancy under lighting change, cross-camera transit plausibility, retention coverage of every persisted table |
 | `tests/test_api_security.py` | 23 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, orphaned/duplicate role grants, plaintext secrets in config |
 
 These are **mutation-verified** — deliberately reintroducing a bug (e.g. the

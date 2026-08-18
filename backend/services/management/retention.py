@@ -52,6 +52,10 @@ _DEFAULTS: Dict[str, Any] = {
     # window is reached only after ~130 GB. This is a hard ceiling enforced on
     # every pass, oldest evicted first. 0 disables it.
     "snapshots_max_mb": 2048,
+    # Phase 6 perception memory. Descriptors are re-identifying, so their
+    # window is deliberately much shorter than the observations'.
+    "perception_observations_days": 60,
+    "perception_appearances_days": 7,
 }
 
 
@@ -60,6 +64,15 @@ def _policy() -> Dict[str, Any]:
     merged = dict(_DEFAULTS)
     merged.update({k: v for k, v in cfg.items() if v is not None})
     return merged
+
+
+class RetentionPolicyError(RuntimeError):
+    """A retention policy cannot be enforced as written.
+
+    Raised rather than logged, because a purge that silently does nothing
+    leaves data on disk that operators and privacy notices both claim was
+    deleted.
+    """
 
 
 def _db_path() -> str:
@@ -80,6 +93,18 @@ def _purge_table(conn: sqlite3.Connection, table: str, column: str, days: int) -
         cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
         return cursor.rowcount or 0
     except sqlite3.Error as exc:
+        # A missing table is legitimate (an optional feature was never used),
+        # but a missing COLUMN means this policy has silently never run. That
+        # was a real defect here: `anomalies` and `license_plates` were purged
+        # on a `timestamp` column neither table has, so plate reads - the most
+        # privacy-sensitive rows in the database - accumulated forever behind
+        # a log line nobody reads. Retention that fails quietly is worse than
+        # no retention, because it is believed.
+        message = str(exc)
+        if "no such column" in message:
+            raise RetentionPolicyError(
+                f"Retention is misconfigured for '{table}': {message}. "
+                f"Rows in this table are NOT being deleted.") from exc
         logger.error(f"Retention purge failed for {table}: {exc}")
         return 0
 
@@ -164,9 +189,22 @@ def run_retention_once() -> Dict[str, int]:
     try:
         with sqlite3.connect(_db_path(), timeout=15) as conn:
             results["events"] = _purge_table(conn, "events", "created_at", policy["events_days"])
-            results["anomalies"] = _purge_table(conn, "anomalies", "timestamp", policy["anomalies_days"])
-            results["license_plates"] = _purge_table(conn, "license_plates", "timestamp", policy["plates_days"])
+            results["anomalies"] = _purge_table(conn, "anomalies", "detected_at", policy["anomalies_days"])
+            results["license_plates"] = _purge_table(conn, "license_plates", "detected_at", policy["plates_days"])
             results["audit_log"] = _purge_table(conn, "audit_log", "timestamp", policy["audit_days"])
+            # Perception memory. Appearance descriptors are re-identifying:
+            # they must expire on their own, shorter clock, and they must not
+            # be able to outlive this policy by living in a separate module
+            # that nobody remembered to wire up.
+            results["perception_observations"] = _purge_table(
+                conn, "perception_observations", "timestamp",
+                policy["perception_observations_days"])
+            results["perception_appearances"] = _purge_table(
+                conn, "perception_appearances", "last_seen",
+                policy["perception_appearances_days"])
+            results["perception_tracks"] = _purge_table(
+                conn, "perception_tracks", "last_seen",
+                policy["perception_appearances_days"])
             conn.commit()
     except sqlite3.Error as exc:
         logger.error(f"Retention database pass failed: {exc}")

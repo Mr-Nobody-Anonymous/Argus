@@ -27,7 +27,7 @@ This document provides a comprehensive overview of the Argus AI Video Analytics 
 | `.env.example` | Every `ARGUS_*` environment variable with an explanatory comment |
 | `package.json` | Root-level workspace pointer (frontend is in `frontend/`) |
 | `package-lock.json` | Root dependency lock |
-| `backend/services/perception/` | **Canonical perception model** — Scene/Entity/Attribute/Relationship/Observation, adapters, temporal tracking, scene graph, capability registry, change detection, scene classification, text-region detection, relationship inference and the evidence API. Stdlib-only at module level, so it imports without torch, OpenCV or a GPU |
+| `backend/services/perception/` | **Canonical perception model** — Scene/Entity/Attribute/Relationship/Observation, adapters, temporal tracking, scene graph, capability registry, change detection, scene classification, text-region detection, relationship inference the evidence API, and Phase 6 memory (durable observation/appearance storage, descriptors with colour constancy, cross-camera and free-text search). Stdlib-only at module level, so it imports without torch, OpenCV or a GPU |
 | `argus.py` | **One-command launcher** — sets up and runs everything on any OS (`start` / `stop` / `status` / `doctor` / `reset`). Stdlib-only by design |
 | `start.bat` / `stop.bat` | Windows double-click wrappers around `argus.py` |
 | `start.command` / `stop.command` | macOS/Linux double-click wrappers |

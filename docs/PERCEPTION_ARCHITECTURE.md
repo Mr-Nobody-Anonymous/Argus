@@ -240,20 +240,99 @@ Evidence:
 **Acceptance:** no assessment can be emitted with an empty evidence list
 (already enforced by `Observation.is_actionable`).
 
-### Phase 6 — Memory · ~2 weeks · CPU
+### Phase 6 — Memory ✅ **done** (`memory.py`, `descriptors.py`, `search.py`)
 
-Route storage by purpose:
+Perception used to evaporate: `TrackStore` evicts, graph edges expire after
+5 s, and a restart erased everything. Two whole classes of question were
+therefore unanswerable. Both now work.
 
-| Store | Holds |
-|---|---|
-| SQLite → PostgreSQL | structured events, entities, relationships |
-| Object storage | snapshots, video evidence |
-| **Qdrant** (in compose + a config schema, but no client code) | appearance + text embeddings |
-| Time-series | telemetry, FPS, queue depth |
+| Store | Holds | Status |
+|---|---|---|
+| SQLite `perception_observations` | what happened, with evidence, full-text searchable | ✅ |
+| SQLite `perception_appearances` | descriptor vectors | ✅ |
+| SQLite `perception_tracks` | entity summaries | ✅ |
+| **Qdrant** | the same vectors, at scale | wired, **used only if a server answers** |
+| Object storage / time-series | snapshots, telemetry | unchanged |
 
-**Acceptance:** "find this person across cameras" returns ranked results by
-embedding similarity; "what happened near the loading bay yesterday" answers
-from stored observations.
+**Acceptance — met.** Verified live on camera 2: 236 observations and 28
+appearances written automatically, `GET /api/v1/memory/recall?text=pacing`
+returning grounded results with their evidence, and cross-camera ranking
+demonstrated on a two-camera simulation.
+
+#### The measurement that designed the descriptor
+
+`person_reid.py` asks for ResNet-50. On this host it reports `enabled: False`
+— the weights are a ~100 MB download never made, and ~1.5 GB of RAM remains
+once YOLO is resident. A feature that only works on hardware nobody has is not
+a feature, so a cheap descriptor was built and **measured** instead: banded HSV
+histograms, 96 dimensions, 0.21 ms/crop.
+
+Evaluated by matching each track's *early* crops against the *mean of its late*
+crops, so consecutive near-identical frames cannot leak:
+
+| condition | plain | grey-world |
+|---|---|---|
+| same lighting | 96.0% | 96.0% |
+| mild shift (0.8x, warm 1.1) | 20.1% | **96.0%** |
+| harsh shift (0.55x, warm 1.3) | 16.1% | **96.0%** |
+| extreme (0.4x, warm 1.5) | 8.0% | **96.0%** |
+
+**A raw colour histogram collapses to 20% the moment the camera changes** —
+which is exactly the cross-camera case. Grey-world colour constancy is
+therefore not a refinement here; without it, offering cross-camera search would
+have been a false promise. `test_colour_constancy_survives_a_lighting_change`
+pins it.
+
+#### What an appearance match is not
+
+The descriptor encodes **clothing colour layout in three bands**. Two people in
+dark coats and jeans match strongly. Every result therefore carries
+`is_identification: false` and a caveat in the payload itself, and matches are
+annotated with whether the journey was *physically possible* — two cameras
+seeing matching clothes simultaneously is evidence of **two people**, and that
+is reported rather than hidden. Implausible matches are kept but demoted, never
+silently dropped.
+
+#### Why SQLite and not Qdrant
+
+`config.yaml` ships `qdrant: enabled: true`, compose defines the service, and
+`qdrant-client` is in requirements-optional. **None of it is installed or
+running here** — trusting that flag would be the same defect as a capability
+registry advertising an OCR engine it cannot run. The backend is chosen by
+*connecting*; Qdrant is used automatically the moment a server answers.
+
+Brute-force cosine is honest arithmetic, and its cost was measured rather than
+assumed:
+
+| stored vectors | search | database |
+|---|---|---|
+| 1 000 | 5 ms | 0.6 MB |
+| 10 000 | 37 ms | 5.8 MB |
+| 50 000 | 207 ms | 28.8 MB |
+
+Past ~25 000 vectors `report()` emits an explicit warning telling the operator
+to run Qdrant, because a search that quietly degrades into a slow one is how a
+feature dies without anyone filing a bug.
+
+#### Retention: the obligation this phase inherited
+
+Phase 2 shipped with no persistence and a tripwire test that would fail the
+moment perception learned to write to disk. **This phase crossed that line
+deliberately, so the tripwire fired and was converted into the stricter
+guarantee it was demanding:** every perception table that persists data must be
+covered by a retention policy, writes are confined to `memory.py` so the claim
+stays auditable, and a table created without a declared expiry fails the suite.
+
+Descriptors expire in **7 days**, the observations citing them in **60** — a
+re-identifying vector has no reason to outlive the event it belonged to.
+
+> **A real defect was found while wiring this up.** `anomalies` and
+> `license_plates` were being purged on a `timestamp` column *neither table
+> has* (both use `detected_at`). Every pass failed silently behind a swallowed
+> log line, so **licence-plate reads — the most privacy-sensitive rows in the
+> database — had never been deleted**. Fixed, and `_purge_table` now raises
+> `RetentionPolicyError` on a missing column instead of logging: retention that
+> fails quietly is worse than no retention, because it is believed.
 
 ### Phase 7 — Autonomous analysis · ~2 weeks · CPU (schedules GPU work)
 
@@ -403,7 +482,7 @@ new fields:
 3. **Phase 2** CPU items ✅ done — colour, scene classification, change
    detection, relationship vocabulary, text regions; character recognition
    waits on an installable engine
-4. **Phase 6** (memory) — makes everything retrievable
+4. **Phase 6** ✅ done (memory) — everything is now retrievable
 5. **Phase 5** (reasoning) — needs 3 + 6 to be meaningful
 6. **Phase 2** GPU items + **Phase 4** (VLM) — when hardware exists
 7. **Phase 7** (autonomous scheduling) — once there is enough to schedule

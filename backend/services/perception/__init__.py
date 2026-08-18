@@ -72,6 +72,39 @@ from .ocr import (
     find_text_regions,
     get_engine,
 )
+from .descriptors import (
+    DIM as DESCRIPTOR_DIM,
+    MatchResult,
+    POSSIBLE_MATCH,
+    STRONG_MATCH,
+    active_backend,
+    average,
+    describe,
+    grey_world,
+    histogram_descriptor,
+    rank,
+    register_backend,
+    similarity,
+)
+from .memory import (
+    PerceptionMemory,
+    QdrantVectorStore,
+    SqliteVectorStore,
+    StoredAppearance,
+    StoredObservation,
+    VectorStore,
+    get_memory,
+    reset_memory,
+)
+from .search import (
+    AppearanceMatch,
+    CrossCameraMatch,
+    find_across_cameras,
+    find_similar_appearances,
+    recall,
+    summarise_period,
+    transit_plausibility,
+)
 from .pipeline import FrameResult, PerceptionPipeline, get_pipeline
 
 __all__ = [
@@ -95,4 +128,13 @@ __all__ = [
     "classify_scene", "density_label", "measure_frame",
     "OcrEngine", "attach_text_to_entities", "extract_text",
     "find_text_regions", "get_engine",
+    "DESCRIPTOR_DIM", "MatchResult", "POSSIBLE_MATCH", "STRONG_MATCH",
+    "active_backend", "average", "describe", "grey_world",
+    "histogram_descriptor", "rank", "register_backend", "similarity",
+    "PerceptionMemory", "QdrantVectorStore", "SqliteVectorStore",
+    "StoredAppearance", "StoredObservation", "VectorStore", "get_memory",
+    "reset_memory",
+    "AppearanceMatch", "CrossCameraMatch", "find_across_cameras",
+    "find_similar_appearances", "recall", "summarise_period",
+    "transit_plausibility",
 ]
