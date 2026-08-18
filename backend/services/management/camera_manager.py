@@ -3,6 +3,8 @@ Camera management service
 """
 import logging
 from datetime import datetime
+
+from backend.services.management import camera_runtime
 from typing import List, Optional, Dict
 import json
 from backend.database.db import get_db
@@ -35,17 +37,21 @@ class CameraManager:
         """Get camera by ID"""
         row = self.db.fetchone("SELECT * FROM cameras WHERE id = ?", (camera_id,))
         if row:
-            return dict(row)
+            # status/fps/last_frame_time are served from memory, not the row.
+            return camera_runtime.apply_to(dict(row))
         return None
 
     def get_all_cameras(self) -> List[Dict]:
         """Get all cameras"""
         rows = self.db.fetchall("SELECT * FROM cameras ORDER BY created_at DESC")
-        return [dict(row) for row in rows]
+        return [camera_runtime.apply_to(dict(row)) for row in rows]
 
     def update_camera(self, camera_id: int, **kwargs) -> Optional[Dict]:
         """Update camera fields"""
-        allowed_fields = ['name', 'location_tag', 'rtsp_url', 'status', 'fps', 'last_frame_time']
+        # status/fps/last_frame_time are deliberately NOT persistable: they are
+        # runtime state held in camera_runtime. Accepting them here would let a
+        # stale value be written back to disk and outlive the process.
+        allowed_fields = ['name', 'location_tag', 'rtsp_url']
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
         
         if not updates:
@@ -67,17 +73,23 @@ class CameraManager:
     def delete_camera(self, camera_id: int) -> bool:
         """Delete camera"""
         self.db.execute("DELETE FROM cameras WHERE id = ?", (camera_id,))
+        # Drop the in-memory liveness entry too, otherwise it lingers for the
+        # process lifetime and a recycled id would inherit a dead camera's state.
+        camera_runtime.clear(camera_id)
         logger.info(f"Deleted camera {camera_id}")
         return True
 
     def update_status(self, camera_id: int, status: str, fps: float = 0.0):
-        """Update camera status and FPS"""
-        self.update_camera(
-            camera_id,
-            status=status,
-            fps=fps,
-            last_frame_time=datetime.now() if status == 'online' else None
-        )
+        """Record camera liveness in memory.
+
+        This used to UPDATE the cameras row about once per second per camera -
+        3.15 billion durable writes a year at 100 cameras - to persist values
+        that are meaningless after the process stops. Worse, SIGKILL bypassed
+        the shutdown hook that reset them, so the API reported crashed cameras
+        as 'online'. Liveness is process state, so it now lives in memory and a
+        camera nobody is ingesting reads back as offline.
+        """
+        camera_runtime.set_status(camera_id, status, fps)
 
     def get_camera_by_url(self, rtsp_url: str) -> Optional[Dict]:
         """Get camera by RTSP URL"""

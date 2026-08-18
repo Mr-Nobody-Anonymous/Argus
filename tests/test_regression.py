@@ -740,3 +740,99 @@ class TestDormantModulesStayHonest:
                 f"{name} is imported by nothing but is not labelled DORMANT in "
                 f"FOLDER_STRUCTURE.md - readers will assume it is live code."
             )
+
+
+class TestCameraLivenessIsNotPersisted:
+    """Camera liveness is process state, not durable data.
+
+    status/fps/last_frame_time were UPDATEd to SQLite about once per second per
+    camera - 3.15 billion durable writes a year at 100 cameras - to store values
+    that are meaningless once the process stops. It was also wrong: a clean
+    shutdown reset them, but SIGKILL did not, so after a crash the API reported
+    ('online', 14.73) for a camera that no longer existed.
+    """
+
+    def test_unknown_camera_reads_offline(self):
+        from backend.services.management import camera_runtime as cr
+        cr.clear_all()
+        assert cr.get_status(4242) == {
+            "status": "offline", "fps": 0.0, "last_frame_time": None
+        }, "a camera nobody is ingesting must read back offline"
+
+    def test_status_round_trips_in_memory(self):
+        from backend.services.management import camera_runtime as cr
+        cr.clear_all()
+        cr.set_status(1, "online", 14.8)
+        state = cr.get_status(1)
+        assert state["status"] == "online"
+        assert abs(state["fps"] - 14.8) < 0.001
+        assert state["last_frame_time"] is not None
+        cr.set_status(1, "offline")
+        assert cr.get_status(1)["last_frame_time"] is None, (
+            "an offline camera must not advertise a last-frame time"
+        )
+        cr.clear_all()
+
+    def test_apply_to_overrides_whatever_the_row_says(self):
+        """A stale row left by a crashed process must never win."""
+        from backend.services.management import camera_runtime as cr
+        cr.clear_all()
+        stale_row = {"id": 2, "name": "cam", "status": "online", "fps": 14.7}
+        assert cr.apply_to(stale_row)["status"] == "offline", (
+            "a stale persisted 'online' survived a restart - this is the crash "
+            "bug the in-memory store exists to prevent"
+        )
+        cr.set_status(2, "online", 9.0)
+        assert cr.apply_to(stale_row)["fps"] == 9.0
+        cr.clear_all()
+
+    def test_liveness_columns_cannot_be_written_to_disk(self):
+        """update_camera must refuse to persist runtime fields."""
+        import inspect
+        from backend.services.management import camera_manager
+        src = inspect.getsource(camera_manager.CameraManager.update_camera)
+        allowed = src.split("allowed_fields = ", 1)[1].split("]", 1)[0] + "]"
+        for field in ("status", "fps", "last_frame_time"):
+            assert f"'{field}'" not in allowed, (
+                f"{field} is persistable again - a stale value could outlive "
+                f"the process and be served as current. Found: {allowed}"
+            )
+
+    def test_update_status_performs_no_database_write(self):
+        """The hot path must not touch the database at all."""
+        from backend.services.management.camera_manager import CameraManager
+        from backend.services.management import camera_runtime as cr
+
+        class ExplodingDB:
+            def execute(self, *a, **k):
+                raise AssertionError(
+                    "update_status wrote to the database - the per-second write "
+                    "amplification has been reintroduced"
+                )
+            fetchone = fetchall = execute
+
+        cr.clear_all()
+        mgr = CameraManager.__new__(CameraManager)
+        mgr.db = ExplodingDB()
+        mgr.update_status(5, "online", 12.0)   # must not raise
+        assert cr.get_status(5)["status"] == "online"
+        cr.clear_all()
+
+    def test_deleting_a_camera_drops_its_runtime_entry(self):
+        """Otherwise state lingers and a recycled id inherits a dead camera's."""
+        from backend.services.management.camera_manager import CameraManager
+        from backend.services.management import camera_runtime as cr
+
+        class NoopDB:
+            def execute(self, *a, **k):
+                return None
+
+        cr.clear_all()
+        mgr = CameraManager.__new__(CameraManager)
+        mgr.db = NoopDB()
+        mgr.update_status(11, "online", 20.0)
+        assert 11 in cr.snapshot()
+        mgr.delete_camera(11)
+        assert 11 not in cr.snapshot(), "runtime state leaked after deletion"
+        assert cr.get_status(11)["status"] == "offline"
+        cr.clear_all()
