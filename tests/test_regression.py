@@ -689,3 +689,54 @@ class TestSnapshotDiskCeiling:
         assert "snapshots_over_cap" in results, (
             "run_retention_once() does not enforce the size cap"
         )
+
+
+class TestDormantModulesStayHonest:
+    """Six modules are imported by nothing and are documented as DORMANT.
+
+    Two failure modes are worth catching: a dormant module quietly rotting until
+    it no longer imports, and a module being wired up (or removed) without the
+    documentation being updated.
+    """
+
+    DORMANT = [
+        "backend.services.core_engine.yolo_tracker",
+        "backend.services.core_engine.multistream_pipeline",
+        "backend.services.core_engine.video_pipeline",
+        "backend.services.core_engine.object_detection_tracker",
+        "backend.services.core_engine.object_detection_tracker_refactored",
+        "backend.services.management.model_optimizer",
+    ]
+
+    @pytest.mark.parametrize("module", DORMANT)
+    def test_dormant_module_still_imports(self, module):
+        import importlib
+        importlib.import_module(module)
+
+    @pytest.mark.parametrize("module", DORMANT)
+    def test_dormant_module_is_labelled_in_docs(self, module):
+        """If a module gets wired up, this fails until the docs are corrected."""
+        import re
+        name = module.rsplit(".", 1)[1] + ".py"
+        doc = (PROJECT_ROOT / "FOLDER_STRUCTURE.md").read_text()
+        row = next((l for l in doc.splitlines() if f"`{name}`" in l), None)
+        assert row is not None, f"{name} is undocumented in FOLDER_STRUCTURE.md"
+
+        src_root = PROJECT_ROOT / "backend"
+        stem = name[:-3]
+        importers = [
+            f for f in src_root.rglob("*.py")
+            if f.stem != stem
+            and re.search(rf"(from|import)\s+\S*\b{stem}\b", f.read_text(errors="ignore"))
+        ]
+        if importers:
+            assert "DORMANT" not in row, (
+                f"{name} is now imported by "
+                f"{[str(f.relative_to(PROJECT_ROOT)) for f in importers]} but is "
+                f"still documented as DORMANT - update FOLDER_STRUCTURE.md."
+            )
+        else:
+            assert "DORMANT" in row, (
+                f"{name} is imported by nothing but is not labelled DORMANT in "
+                f"FOLDER_STRUCTURE.md - readers will assume it is live code."
+            )

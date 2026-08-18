@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy only reclaims space after ~130 GB (~2.7 TB across 20 cameras). Every
   retention pass now evicts oldest-first until the directory fits.
 
+### Changed
+- Six modules that nothing imports (`yolo_tracker.py`, `object_detection_tracker.py`,
+  `object_detection_tracker_refactored.py`, `video_pipeline.py`,
+  `multistream_pipeline.py`, `model_optimizer.py`) are now labelled **DORMANT**
+  in `FOLDER_STRUCTURE.md` rather than described as live components. In
+  particular `yolo_tracker.py` was documented as the "fallback if deep_tracker
+  is disabled" - no such fallback exists in code. The modules are kept, and a
+  test now fails if one is wired up (or orphaned) without the docs following.
+
 ### Removed
 - Nine declared-but-unimported dependencies: `scikit-image` (35 MB on disk),
   `statsmodels`, `torchmetrics`, `deap`, `pydantic-settings`, `httpx`,

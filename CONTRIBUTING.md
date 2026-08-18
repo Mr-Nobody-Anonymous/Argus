@@ -29,7 +29,7 @@ cd frontend && npm install && npm run dev
 ## Running the tests
 
 ```bash
-pytest                    # 56 tests, ~14s
+pytest                    # 68 tests, ~16s
 pytest -m "not slow"      # skip the slower pipeline tests
 ```
 
