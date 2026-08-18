@@ -5,6 +5,82 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Alert delivery and video evidence — events that leave the database
+
+### Every alert Argus produced was delivered nowhere
+`MQTTPublisher.publish_event()` was fully implemented and `mqtt.enabled` was
+`true` in `config.yaml`, but **nothing in the codebase ever called it**. Events
+were written to SQLite and that was the end of them; no endpoint revealed the
+gap. This is the same defect class as the three configured-but-unimplemented
+rules: a capability advertised in config that no code path delivers.
+
+- `backend/services/management/notifications.py`: MQTT and webhook transports,
+  an alert policy, a bounded queue with a worker thread, and counters for
+  everything it drops. The webhook uses stdlib `urllib` — no new dependency.
+- Dispatch is hooked into `EventStore.create_event`, the single choke point
+  every event passes through, and wrapped so a failing transport can never
+  prevent an event being recorded. Recording is the guarantee; delivery is
+  best-effort and separately reported.
+- **Availability is probed live, never inferred from the config flag.** With
+  `mqtt.enabled: true` and no broker running, `GET /api/v1/notifications/status`
+  reports the channel unavailable *and gives the reason*. A delivery that was
+  never attempted is never reported as sent.
+- Policy: priority floor, allow/deny lists, quiet hours (including windows that
+  wrap midnight), and a per-`(camera, rule)` rate limit so one flapping camera
+  cannot exhaust a pager. Every suppression is counted and surfaced.
+- `POST /api/v1/notifications/test` sends a synthetic alert through every
+  channel and reports the real per-transport outcome, so a misconfigured
+  webhook is found during setup rather than during an incident.
+
+Verified live: a 60-second run on real footage delivered **34 alerts over real
+HTTP** to a local receiver, with honest counters — 34 webhook successes, 34
+MQTT failures (no broker present), 20 rate-limited.
+
+### Pre-event video evidence
+A snapshot shows the instant a rule fired, not the approach — usually the part
+an investigator needs. `backend/services/management/evidence_clips.py` keeps a
+per-camera ring buffer and exports an mp4 when a high-value rule fires.
+
+- **Frames are buffered JPEG-encoded, not raw.** Measured on 480p: raw costs
+  0.88 MB/frame, so 10 s at 10 fps is 88 MB *per camera* — 352 MB across four
+  cameras, which does not fit beside the detection model on a 2 GB host.
+  JPEG q=80 costs 0.5–20 MB for the same window at ~2 ms/frame encode, against
+  an existing ~108 ms/frame YOLO budget.
+- **Bounded in bytes as well as frames.** Frame size varies ~40× with scene
+  content, so a frame count alone is not a memory bound. Both limits are
+  enforced and the byte ceiling is reported.
+- Clip export is opt-in per rule (`evidence_clips.clip_rules`); writing one
+  costs a decode per frame plus disk.
+- A clip that cannot be written says so. No codec, no frames, or an unwritable
+  path each return `written: false` with a reason — never a path to a file that
+  does not exist.
+- Served from `GET /api/v1/events/{event_id}/clip`: `404` with the reason when
+  there is no clip, `410` once retention has removed it.
+- Retention: `clips_days` plus a `clips_max_mb` ceiling, oldest evicted first.
+  New files on disk with no expiry is a disk-exhaustion bug.
+
+Verified live: a real intrusion event produced a playable 40-frame, 6.3-second
+mp4 of actual footage, attached to the event and readable back with OpenCV.
+
+### Three latent bugs found while testing this work
+- `backend/api/main.py` called `json.loads` with **no `json` import** — a
+  runtime 500 waiting for the first caller.
+- `backend/services/perception/capabilities.py` discarded a verifier's
+  explanation when the module was missing, leaving operators a bare
+  `ModuleNotFoundError` instead of naming the half of the feature that still
+  works. OCR now reports: *"pytesseract unusable: ModuleNotFoundError. Text
+  regions are still detected by the text_regions capability."*
+- The SPA test reloaded `backend.api.main` with a built UI present and left it
+  in `sys.modules`, leaking a different route table into every subsequent test.
+  The README route-count test passed in isolation and failed in a full run —
+  a trap for any future route addition.
+
+Mutation-verified: 14 mutations of the new guarantees, 14 caught. Two initially
+survived — a webhook that silently claims success, and a deleted MQTT liveness
+probe — because one test skipped itself when the channel looked available and
+one asserted on source text that the `import` line alone satisfied. Both tests
+were rewritten to drive real behaviour.
+
 ## Analysis coverage — closing the gap between what Argus computes and what it reports
 
 ### Perception observations now reach operators
