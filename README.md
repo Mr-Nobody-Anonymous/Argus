@@ -469,11 +469,11 @@ Field notes: the class label key is **`class`** (not `class_name`), `bbox` is an
 
 ## 📊 API Reference
 
-**48 addressable operations**: 47 in the OpenAPI schema (43 under `/api/v1`,
-3 streaming, plus `GET /`) and 1 WebSocket route, with `GET /metrics` served
-outside the schema.
+**57 addressable operations**: 56 in the OpenAPI schema (49 under `/api/v1`,
+3 streaming, plus `GET /`, `GET /api`, `/docs`, `/redoc`, `/openapi.json`) and
+1 WebSocket route, with `GET /metrics` served outside the schema.
 
-Of the 43 `/api/v1` operations, **40 require a token and 3 are public**.
+Of the 49 `/api/v1` operations, **46 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 
@@ -560,6 +560,30 @@ Interactive docs: http://localhost:8000/docs
 | `GET` | `/api/v1/webcam/status` | viewer | Webcam mode status |
 | `POST` | `/api/v1/webcam/stop` | operator | Stop webcam |
 
+### Perception
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/perception/tracks` | viewer | Every tracked entity in the world model, with its accumulated attributes |
+| `GET` | `/api/v1/perception/tracks/{track_id}` | viewer | One entity: attributes, trajectory, relationships, observations |
+| `GET` | `/api/v1/perception/tracks/{track_id}/explain` | viewer | **Evidence chain** — measurements and inferences under separate keys |
+| `GET` | `/api/v1/perception/capabilities` | viewer | What can run here, measured cost, and *why* anything is unavailable |
+| `GET` | `/api/v1/perception/changes` | viewer | Per-camera change baselines and whether they are mature enough to judge |
+| `GET` | `/api/v1/perception/stats` | viewer | Throughput and measured per-stage cost |
+
+`/explain` is the endpoint to reach for before acting on an alert. It never
+returns a single confident narrative: `measured` holds only direct
+observations, `inferred` and `relationships` hold conclusions drawn from them,
+and each carries `grounded` (is there a measurement under this?) and
+`actionable` (grounded **and** above the confidence floor). A conclusion that
+rests only on other conclusions is reported as not actionable however
+confident it looks.
+
+`/capabilities` is deliberately blunt about what this host cannot do. On a
+machine with no CUDA and no OCR engine it reports 12 of 18 capabilities
+available, each unavailable one naming the reason and the remedy — for example
+`ocr` explains that `tesseract` is missing *and* that text regions are still
+being detected without it.
+
 ### Streaming
 | Endpoint | Type | Role | Description |
 |----------|------|------|-------------|
@@ -636,7 +660,7 @@ scan, a gitignore-hygiene check, and a frontend build. See
 
 | Suite | Tests | Guards against |
 |---|---|---|
-| `tests/test_regression.py` | 103 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning |
+| `tests/test_regression.py` | 148 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning, change-detection baseline maturity and hour-of-day separation, single-frame vs behavioural relationship claims, unread-text honesty, evidence grounding, perception persistence and memory bounds |
 | `tests/test_api_security.py` | 23 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, orphaned/duplicate role grants, plaintext secrets in config |
 
 These are **mutation-verified** — deliberately reintroducing a bug (e.g. the

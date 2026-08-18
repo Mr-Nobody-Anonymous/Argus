@@ -27,10 +27,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from .adapters import infer_spatial_relationships, scene_from_detections
+from .change import ChangeDetector
 from .observation import Entity, Observation, Scene, Source
 from .scene_graph import (
     SceneGraph,
@@ -75,13 +77,29 @@ class PerceptionPipeline:
     its own.
     """
 
-    def __init__(self, enable_attributes: bool = True):
+    def __init__(self, enable_attributes: bool = True,
+                 enable_scene_context: bool = True,
+                 enable_change_detection: bool = True,
+                 enable_rich_relationships: bool = True,
+                 enable_text: bool = False,
+                 text_interval_s: float = 2.0):
         self.tracks = TrackStore()
         self.graph = SceneGraph()
+        self.change = ChangeDetector()
         self.enable_attributes = enable_attributes
+        self.enable_scene_context = enable_scene_context
+        self.enable_change_detection = enable_change_detection
+        self.enable_rich_relationships = enable_rich_relationships
+        # Text detection is off by default: at ~12 ms it is the most expensive
+        # CPU stage here and most cameras never see readable writing. It is
+        # opt-in per deployment rather than a tax on every frame.
+        self.enable_text = enable_text
+        self.text_interval_s = text_interval_s
         self._lock = threading.RLock()
         self._frame_counts: Dict[int, int] = {}
         self._last_retire = 0.0
+        self._last_text: Dict[int, float] = {}
+        self._stage_ms: Dict[str, float] = {}
 
     # -- main entry point -----------------------------------------------------
 
@@ -100,17 +118,33 @@ class PerceptionPipeline:
 
         # Cheap visual attributes, when a frame was supplied.
         if self.enable_attributes and frame is not None:
-            try:
+            with self._stage("attributes"):
                 from .attributes import enrich_scene
                 enrich_scene(scene, frame)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Attribute enrichment skipped: {exc}")
+
+        # Environment context: what the whole frame looks like. Runs before
+        # the per-entity work so downstream stages can read the lighting and
+        # visibility when deciding how far to trust appearance attributes.
+        if self.enable_scene_context and frame is not None:
+            with self._stage("scene_context"):
+                from .scene_classifier import classify_scene
+                classify_scene(scene, frame)
+
+        # Text regions, rate-limited per camera. Signage does not change
+        # between consecutive frames, so reading it every frame is waste.
+        if self.enable_text and frame is not None and self._text_due(camera_id, ts):
+            with self._stage("text"):
+                from .ocr import attach_text_to_entities, extract_text
+                extract_text(scene, frame)
+                attach_text_to_entities(scene)
 
         # Single-frame geometry, then temporal accumulation.
-        try:
-            infer_spatial_relationships(scene)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"Relationship inference failed: {exc}")
+        with self._stage("relationships"):
+            if self.enable_rich_relationships:
+                from .relationships import infer_all
+                infer_all(scene)
+            else:
+                infer_spatial_relationships(scene)
 
         touched = self.tracks.update_from_scene(scene)
 
@@ -120,6 +154,12 @@ class PerceptionPipeline:
             logger.debug(f"Scene graph update failed: {exc}")
 
         observations: List[Observation] = []
+
+        # Change detection: what is different from this camera's normal. Runs
+        # against the baseline BEFORE the baseline absorbs this frame.
+        if self.enable_change_detection:
+            with self._stage("change"):
+                observations.extend(self.change.analyse(scene, frame))
 
         # Following needs velocity from several frames, so it is only worth
         # evaluating once tracks have some history.
@@ -148,6 +188,35 @@ class PerceptionPipeline:
             scene=scene, tracks=touched, observations=observations,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
+
+    @contextmanager
+    def _stage(self, name: str):
+        """Time one stage and swallow its failures.
+
+        Every stage is optional by construction: perception enriches a frame,
+        it must never be able to stop one being processed. The timing is what
+        feeds measured costs back into the capability registry, replacing
+        estimates with what this host actually does.
+        """
+        started = time.perf_counter()
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001 - a stage failure is not fatal
+            logger.debug(f"Perception stage '{name}' failed: {exc}")
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000.0
+            with self._lock:
+                previous = self._stage_ms.get(name)
+                self._stage_ms[name] = (elapsed if previous is None
+                                        else 0.9 * previous + 0.1 * elapsed)
+
+    def _text_due(self, camera_id: int, now: float) -> bool:
+        with self._lock:
+            last = self._last_text.get(camera_id, 0.0)
+            if now - last < self.text_interval_s:
+                return False
+            self._last_text[camera_id] = now
+            return True
 
     def _retire_if_due(self, now: float, interval_s: float = 2.0) -> List[Observation]:
         with self._lock:
@@ -191,13 +260,37 @@ class PerceptionPipeline:
             "tracks_active": len(active),
             "relationships_active": len(self.graph.active_edges()),
             "observations": sum(len(t.observations) for t in active),
+            "stage_ms": {k: round(v, 3) for k, v in sorted(self._stage_ms.items())},
+            "change_baselines": self.change.report()["cameras"],
+            "stages_enabled": {
+                "attributes": self.enable_attributes,
+                "scene_context": self.enable_scene_context,
+                "change_detection": self.enable_change_detection,
+                "rich_relationships": self.enable_rich_relationships,
+                "text": self.enable_text,
+            },
         }
+
+    def explain(self, track_id: int) -> Optional[Dict[str, Any]]:
+        """Why Argus believes what it believes about one entity.
+
+        Separates measurements from inferences rather than presenting a single
+        confident narrative - the distinction an operator needs before acting.
+        """
+        track = self.tracks.get(track_id)
+        if track is None:
+            return None
+        from .evidence import explain_track
+        return explain_track(track, self.graph, self.tracks)
 
     def reset(self) -> None:
         self.tracks.clear()
         self.graph.clear()
+        self.change.reset()
         with self._lock:
             self._frame_counts.clear()
+            self._last_text.clear()
+            self._stage_ms.clear()
 
 
 _PIPELINE: Optional[PerceptionPipeline] = None

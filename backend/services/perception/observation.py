@@ -367,19 +367,77 @@ class Entity:
 # ── relationships ────────────────────────────────────────────────────────────
 
 class RelationKind(str, Enum):
+    """The predicates Argus can assert between two entities.
+
+    Grouped by what is required to support them. The grouping matters: a
+    consumer can tell from the predicate alone how much evidence stands behind
+    it, and geometry-only claims are never presented as observed behaviour.
+    """
+
+    # -- single frame, geometry only ----------------------------------------
     NEAR = "near"
-    CARRYING = "carrying"
+    FAR_FROM = "far_from"
     INSIDE = "inside"
+    OUTSIDE = "outside"
+    ABOVE = "above"
+    BELOW = "below"
+    OCCLUDING = "occluding"
+    ADJACENT_TO = "adjacent_to"
+
+    # -- single frame, geometry plus a category prior ------------------------
+    CARRYING = "carrying"
+    HOLDING = "holding"
+    WEARING = "wearing"
     RIDING = "riding"
+    TOUCHING = "touching"
+
+    # -- requires motion history --------------------------------------------
     FOLLOWING = "following"
     APPROACHING = "approaching"
-    OCCLUDING = "occluding"
+    MOVING_AWAY = "moving_away"
+    ENTERING = "entering"
+    EXITING = "exiting"
+    ACCOMPANYING = "accompanying"
+
+    # -- requires sustained observation, weakest claims ----------------------
     INTERACTING = "interacting"
+    ASSOCIATED_WITH = "associated_with"
+    QUEUING_BEHIND = "queuing_behind"
+
+
+# Which predicates a single frame can support. Anything outside this set is a
+# claim about behaviour over time and must not be asserted from one frame.
+SINGLE_FRAME_PREDICATES = frozenset({
+    RelationKind.NEAR.value, RelationKind.FAR_FROM.value,
+    RelationKind.INSIDE.value, RelationKind.OUTSIDE.value,
+    RelationKind.ABOVE.value, RelationKind.BELOW.value,
+    RelationKind.OCCLUDING.value, RelationKind.ADJACENT_TO.value,
+    RelationKind.CARRYING.value, RelationKind.HOLDING.value,
+    RelationKind.WEARING.value, RelationKind.RIDING.value,
+    RelationKind.TOUCHING.value,
+})
+
+# Predicates that describe behaviour rather than geometry. These carry a
+# heavier burden of proof and are capped below certainty everywhere they are
+# produced.
+BEHAVIOURAL_PREDICATES = frozenset({
+    RelationKind.FOLLOWING.value, RelationKind.APPROACHING.value,
+    RelationKind.MOVING_AWAY.value, RelationKind.ENTERING.value,
+    RelationKind.EXITING.value, RelationKind.ACCOMPANYING.value,
+    RelationKind.INTERACTING.value, RelationKind.ASSOCIATED_WITH.value,
+    RelationKind.QUEUING_BEHIND.value,
+})
 
 
 @dataclass
 class Relationship:
-    """A directed edge between two entities: subject -> predicate -> object."""
+    """A directed edge between two entities: subject -> predicate -> object.
+
+    Carries its own lifecycle. A relationship seen once in one frame and one
+    seen continuously for two minutes are very different claims, and flattening
+    both to a single confidence number loses the distinction that matters most
+    to a reviewer.
+    """
 
     subject_id: str
     predicate: str
@@ -387,6 +445,9 @@ class Relationship:
     confidence: float = 0.5
     source: str = Source.RULE.value
     evidence: Dict[str, Any] = field(default_factory=dict)
+    first_observed: float = field(default_factory=_now)
+    last_observed: float = field(default_factory=_now)
+    observation_count: int = 1
 
     def __post_init__(self) -> None:
         if isinstance(self.predicate, RelationKind):
@@ -394,9 +455,61 @@ class Relationship:
         if isinstance(self.source, Source):
             self.source = self.source.value
         self.confidence = max(0.0, min(1.0, float(self.confidence)))
+        self.observation_count = max(1, int(self.observation_count))
+
+    @property
+    def duration(self) -> float:
+        """Seconds between the first and most recent sighting."""
+        return max(0.0, self.last_observed - self.first_observed)
+
+    @property
+    def is_behavioural(self) -> bool:
+        """Whether this predicate is a claim about behaviour over time."""
+        return self.predicate in BEHAVIOURAL_PREDICATES
+
+    @property
+    def status(self) -> str:
+        """How much weight this relationship has earned.
+
+        ``momentary``   seen once - true of this frame, nothing more
+        ``recurring``   seen repeatedly but briefly
+        ``sustained``   held for long enough to describe a behaviour
+        """
+        if self.observation_count <= 1:
+            return "momentary"
+        if self.duration >= 5.0 and self.observation_count >= 5:
+            return "sustained"
+        return "recurring"
+
+    @property
+    def is_supported(self) -> bool:
+        """A behavioural claim needs more than one frame behind it.
+
+        This is the rule that stops a single frame's geometry being reported
+        as "following". Geometric predicates are self-supporting because they
+        only ever claim what the frame shows.
+        """
+        if not self.evidence:
+            return False
+        if self.is_behavioural:
+            return self.observation_count > 1
+        return True
+
+    def reinforce(self, timestamp: Optional[float] = None,
+                  confidence: Optional[float] = None) -> None:
+        """Record another sighting of the same relationship."""
+        self.last_observed = timestamp if timestamp is not None else _now()
+        self.observation_count += 1
+        if confidence is not None:
+            self.confidence = max(0.0, min(1.0, float(confidence)))
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["status"] = self.status
+        data["duration"] = round(self.duration, 2)
+        data["is_supported"] = self.is_supported
+        data["is_behavioural"] = self.is_behavioural
+        return data
 
 
 # ── scene ────────────────────────────────────────────────────────────────────
@@ -496,12 +609,20 @@ class Scene:
         )
         scene.entities = [Entity.from_dict(e) for e in data.get("entities") or []]
         for r in data.get("relationships") or []:
+            # The lifecycle fields must round-trip: a relationship restored
+            # from storage that resets its own first_observed would silently
+            # convert two minutes of sustained evidence into a fresh sighting.
+            observed_at = float(r.get("first_observed", data.get("timestamp")
+                                      or _now()))
             scene.relationships.append(Relationship(
                 subject_id=r["subject_id"], predicate=r["predicate"],
                 object_id=r["object_id"],
                 confidence=float(r.get("confidence", 0.5)),
                 source=r.get("source", Source.RULE.value),
                 evidence=r.get("evidence") or {},
+                first_observed=observed_at,
+                last_observed=float(r.get("last_observed", observed_at)),
+                observation_count=int(r.get("observation_count", 1)),
             ))
         for k, a in (data.get("environment") or {}).items():
             if isinstance(a, dict) and "value" in a:

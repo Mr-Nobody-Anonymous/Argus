@@ -5,8 +5,9 @@
 This document turns the proposed vision into an executable plan. It states what
 exists, what each phase adds, what it costs, and how you know it worked.
 
-Phase 1 is **implemented and tested** (`backend/services/perception/`). Phases
-2–7 are specified, not built.
+Phases 1, 2 (CPU), 3 and the capability registry are **implemented and tested**
+(`backend/services/perception/`). Phases 4–7 and the GPU items of Phase 2 are
+specified, not built.
 
 ---
 
@@ -128,19 +129,53 @@ spatial relationship inference. 15 tests, 2 mutation-verified.
 malformed input is skipped not fatal; source authority beats confidence. *All
 met.*
 
-### Phase 2 — Perception expansion · ~3 weeks · GPU for two items
+### Phase 2 — Perception expansion · CPU items ✅ **done**
 
-| Capability | Model | Runs here? |
-|---|---|---|
-| General scene OCR | PaddleOCR / EasyOCR | CPU, slow — batch on crops only |
-| Colour + attribute extraction | HSV histogram in-region | **yes**, negligible cost |
-| Scene classification (indoor/outdoor, day/night) | Places365 MobileNet | **yes**, ~40 ms |
-| Instance segmentation | YOLOv8-seg or SAM | **GPU** |
-| Open-vocabulary detection | OWL-ViT / GroundingDINO | **GPU** |
+| Capability | Implementation | Runs here? | Measured |
+|---|---|---|---|
+| Text **region** detection | MSER + morphological gradient (`ocr.py`) | **yes** | 19 ms, opt-in |
+| Text **recognition** | pluggable: tesseract / Paddle / EasyOCR | **no** — no engine installable without root | — |
+| Colour + attribute extraction | vectorised HSV (`attributes.py`) | **yes** | 0.68 ms/entity |
+| Scene classification | frame statistics (`scene_classifier.py`) | **yes** | 1.3 ms |
+| Change detection | per-camera hourly baseline (`change.py`) | **yes** | 0.62 ms |
+| Rich relationships | geometry + category priors (`relationships.py`) | **yes** | 0.51 ms |
+| Place categorisation (Places365) | needs trained weights | **no** — none shipped | — |
+| Instance segmentation | YOLOv8-seg or SAM | **GPU** | — |
+| Open-vocabulary detection | OWL-ViT / GroundingDINO | **GPU** | — |
 
-**Acceptance:** every capability writes `Attribute`s with its own `Source`;
-disabling any one degrades the scene gracefully rather than erroring; a text
-entity appears for a legible sign at 720p.
+**Total CPU perception cost: 9.09 ms/frame** measured on live video at 13
+entities/frame — 8.4 % of the 108 ms detection pass, camera FPS unchanged at
+14.79.
+
+**Acceptance — met:** every capability writes `Attribute`s with its own
+`Source`; disabling any one degrades the scene gracefully rather than erroring
+(`test_pipeline_never_raises_on_a_broken_frame`); a `TEXT` entity appears for a
+legible sign.
+
+#### Two capabilities deliberately report themselves unavailable
+
+`ocr` and `scene_type` are registered, specified and wired — and both report
+`available: false` here, with a reason and a remedy:
+
+```
+ocr         pytesseract unusable: TesseractNotFoundError. Text *regions* are
+            still detected by the text_regions capability.
+scene_type  no place-classifier weights found; set ARGUS_PLACES365_WEIGHTS or
+            drop a checkpoint in backend/models/places365.pth
+```
+
+This is the design working, not a gap. `pytesseract` **imports cleanly on a
+machine with no `tesseract` binary** and only fails when asked to read, so an
+import-only probe would have advertised OCR and failed on the first real frame.
+Capabilities may now declare a `verify` callable that must actually exercise
+the backend; `test_capability_registry_does_not_claim_ocr_it_cannot_do` pins
+the registry to the functional probe.
+
+The split between locating text and reading it is what makes this useful
+anyway: Argus reports *where* writing is, marks it `text_readable: false`, and
+records why. **Seeing writing you cannot read is a real observation, and it is
+different from seeing none.** Installing any engine flips the capability on
+with no other change.
 
 > **OCR ≠ LPR.** Keep license-plate reading specialised (it has regional
 > formats, aspect priors and a plate detector). General OCR is a separate
@@ -342,8 +377,22 @@ new fields:
   routes.
 - Face embeddings remain deliberately excluded from automatic deletion (an
   explicit, documented decision in `retention.py`).
-- **Before Phase 2 ships**, extend retention to cover appearance embeddings and
-  OCR text — both are re-identifying, and neither is currently in scope.
+- **Phase 2 CPU status: no new persistence was introduced.** Colour palettes,
+  brightness, text regions, scene statistics and change baselines all live in
+  memory inside `PerceptionPipeline` and are lost on restart. Nothing new
+  reaches disk, so `retention.py` did not need extending to ship this phase.
+  The bound is structural rather than time-based: `TrackStore(max_tracks=2048)`
+  evicts the longest-idle track, attribute history is capped at 32 values per
+  attribute, and `RunningStat` keeps change baselines in constant memory
+  (mean/variance only — no samples, and no imagery).
+- **This becomes a real obligation the moment Phase 6 (memory) lands**, because
+  that phase is precisely the one that writes appearance data to disk. Colour
+  palettes and OCR text are both re-identifying: a "grey jacket, red backpack"
+  vector tracks a person across cameras as surely as a face embedding, and
+  recognised text can be a name badge or a number plate. When any of it is
+  persisted it must be added to `retention.py` in the same change, not after.
+  `TestPerceptionKeepsNoPersistentAppearanceData` fails the moment perception
+  starts writing to the database, so this cannot be forgotten silently.
 
 ---
 
@@ -351,7 +400,9 @@ new fields:
 
 1. **Phase 1** ✅ — nothing else is joinable without it
 2. **Phase 3** ✅ (temporal + scene graph) — done; 0.3% frame cost
-3. **Phase 2** CPU items — colour ✅ done; scene classification and OCR remain
+3. **Phase 2** CPU items ✅ done — colour, scene classification, change
+   detection, relationship vocabulary, text regions; character recognition
+   waits on an installable engine
 4. **Phase 6** (memory) — makes everything retrievable
 5. **Phase 5** (reasoning) — needs 3 + 6 to be meaningful
 6. **Phase 2** GPU items + **Phase 4** (VLM) — when hardware exists

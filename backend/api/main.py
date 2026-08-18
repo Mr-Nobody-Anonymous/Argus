@@ -1247,6 +1247,63 @@ async def get_perception_capabilities():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/perception/tracks/{track_id}/explain", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def explain_perception_track(track_id: int):
+    """Why Argus believes what it believes about one entity.
+
+    Returns measurements and inferences under separate keys rather than one
+    confident narrative. An operator about to act on an alert needs to know
+    which parts were observed and which were concluded - a system that blurs
+    the two teaches people either to over-trust it or to ignore it.
+    """
+    try:
+        from backend.services.perception import get_pipeline
+        explained = get_pipeline().explain(track_id)
+        if explained is None:
+            raise HTTPException(status_code=404,
+                                detail=f"No track {track_id} in the world model")
+        return explained
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error explaining track {track_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/perception/changes", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_perception_changes():
+    """Per-camera change-detection baselines and their maturity.
+
+    A baseline that has not seen enough samples reports `ready: false` and
+    judges nothing, so this endpoint also answers "is anomaly detection
+    actually working on this camera yet?".
+    """
+    try:
+        from backend.services.perception import get_pipeline
+        return get_pipeline().change.report()
+    except Exception as e:
+        logger.error(f"Error reading change baselines: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/perception/stats", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_perception_stats():
+    """Pipeline throughput and measured per-stage cost.
+
+    Stage costs are measured on this host, not estimated, so the numbers here
+    are what scheduling decisions should be based on.
+    """
+    try:
+        from backend.services.perception import get_pipeline
+        return get_pipeline().stats()
+    except Exception as e:
+        logger.error(f"Error reading perception stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/metrics", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_metrics():
     """Get system metrics"""

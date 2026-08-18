@@ -52,6 +52,15 @@ class Capability:
     requires: Set[str] = field(default_factory=set)
     description: str = ""
     module: Optional[str] = None         # import path probed for availability
+    verify: Optional[Callable[[], Any]] = None
+    """Optional functional check, run after the import succeeds.
+
+    Some packages import cleanly and still cannot do the job: ``pytesseract``
+    imports without the ``tesseract`` binary, ``torchvision`` imports without
+    any trained weights. For those, importing proves nothing and a capability
+    that reports itself available would lie to the scheduler on the first real
+    frame. When present, this callable must actually exercise the backend.
+    """
     available: bool = False
     unavailable_reason: str = ""
     measured: bool = False               # True once cost_ms came from a real run
@@ -126,11 +135,34 @@ class CapabilityRegistry:
                     continue
                 try:
                     importlib.import_module(cap.module)
-                    cap.available = True
-                    cap.unavailable_reason = ""
                 except Exception as exc:  # noqa: BLE001 - any failure means unusable
                     cap.available = False
                     cap.unavailable_reason = f"{type(exc).__name__}: {exc}"[:160]
+                    continue
+
+                if cap.verify is None:
+                    cap.available = True
+                    cap.unavailable_reason = ""
+                    continue
+
+                # The import worked; now prove the backend actually runs.
+                # A verifier may return a bare bool or (ok, reason); the
+                # second form lets it explain precisely what is missing,
+                # which is the difference between an actionable report and
+                # "something went wrong".
+                try:
+                    result = cap.verify()
+                    if isinstance(result, tuple):
+                        ok, reason = bool(result[0]), str(result[1])
+                    else:
+                        ok, reason = bool(result), ""
+                    cap.available = ok
+                    cap.unavailable_reason = "" if ok else (
+                        reason or "imports, but the backend is not usable here")
+                except Exception as exc:  # noqa: BLE001
+                    cap.available = False
+                    cap.unavailable_reason = (
+                        f"functional check failed: {type(exc).__name__}")[:160]
             self._probed = True
             return {c.name: c.available for c in self._caps.values()}
 
@@ -201,6 +233,47 @@ class CapabilityRegistry:
                 for c in sorted(caps, key=lambda x: (x.tier, x.name))
             ],
         }
+
+
+def _ocr_engine_usable() -> bool:
+    """Whether any OCR engine can actually read an image here.
+
+    Delegates to the engine wrapper, which executes the backend rather than
+    importing it - `pytesseract` imports fine with no `tesseract` binary
+    installed and only fails when asked to read.
+    """
+    try:
+        from .ocr import get_engine
+        engine = get_engine()
+        if engine.available:
+            return True, ""
+        return False, (f"{engine.reason}. Text *regions* are still detected "
+                       f"by the text_regions capability.")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"OCR probe failed: {type(exc).__name__}"
+
+
+def _place_classifier_available() -> bool:
+    """Whether trained place-classification weights are present.
+
+    No weights are shipped, so this is honestly False here. Wiring a
+    Places365 checkpoint is all that is needed to flip it, and nothing else
+    in the pipeline has to change.
+    """
+    try:
+        import os
+        from pathlib import Path
+        candidates = [
+            Path(__file__).resolve().parents[2] / "models" / "places365.pth",
+            Path(os.environ.get("ARGUS_PLACES365_WEIGHTS", "/nonexistent")),
+        ]
+        if any(p.is_file() for p in candidates):
+            return True, ""
+        return False, ("no place-classifier weights found; set "
+                       "ARGUS_PLACES365_WEIGHTS or drop a checkpoint in "
+                       "backend/models/places365.pth")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"weights probe failed: {type(exc).__name__}"
 
 
 def _cuda_available() -> bool:
@@ -279,18 +352,63 @@ def build_default_registry() -> CapabilityRegistry:
         description="License-plate reading",
     ))
 
-    # -- CPU: specified, not yet implemented ---------------------------------
+    # -- CPU: implemented this phase -----------------------------------------
+    reg.register(Capability(
+        name="text_regions", tier=Tier.CPU, cost_ms=19.0,
+        provides={"text_region", "has_unread_text"}, requires={"frame"},
+        module="backend.services.perception.ocr",
+        description="Locate text-like regions with MSER plus a morphological "
+                    "gradient. Finds where writing is without reading it, so "
+                    "the location is known even with no OCR engine installed.",
+    ))
+    reg.register(Capability(
+        name="scene_classification", tier=Tier.CPU, cost_ms=4.0,
+        provides={"lighting", "visibility", "density", "mean_brightness",
+                  "contrast", "edge_density"},
+        requires={"frame"},
+        module="backend.services.perception.scene_classifier",
+        description="Environment measurements plus coarse lighting and "
+                    "visibility labels. Does NOT claim a place category - "
+                    "that needs a trained classifier (see scene_type).",
+    ))
+    reg.register(Capability(
+        name="change_detection", tier=Tier.CPU, cost_ms=2.0,
+        provides={"scene_change", "occupancy_anomaly", "object_appeared",
+                  "object_left_frame"},
+        requires={"frame"},
+        module="backend.services.perception.change",
+        description="Departures from a per-camera, time-of-day baseline. "
+                    "Catches what no class list anticipates.",
+    ))
+    reg.register(Capability(
+        name="rich_relationships", tier=Tier.CPU, cost_ms=3.0,
+        provides={"inside", "riding", "wearing", "holding", "carrying",
+                  "above", "occluding", "adjacent_to", "far_from"},
+        requires={"detection"},
+        module="backend.services.perception.relationships",
+        description="Single-frame relationship vocabulary from geometry and "
+                    "category priors. Behavioural predicates are excluded "
+                    "here by design - they need motion history.",
+    ))
+
+    # -- CPU: specified, needs a backend that is not installable here ---------
     reg.register(Capability(
         name="ocr", tier=Tier.CPU, cost_ms=120.0,
         provides={"text"}, requires={"text_region"},
-        module="paddleocr",
-        description="General scene text recognition (Phase 2)",
+        module="pytesseract",
+        verify=_ocr_engine_usable,
+        description="Read characters from located text regions. Pluggable: "
+                    "tesseract, PaddleOCR or EasyOCR, whichever is usable. "
+                    "Region detection (text_regions) works without any of "
+                    "them.",
     ))
     reg.register(Capability(
-        name="scene_classification", tier=Tier.CPU, cost_ms=40.0,
-        provides={"scene_type", "lighting", "indoor_outdoor"},
-        module="backend.services.perception.scene_classifier",
-        description="Environment and lighting context (Phase 2)",
+        name="scene_type", tier=Tier.CPU, cost_ms=40.0,
+        provides={"scene_type", "indoor_outdoor"}, requires={"frame"},
+        module="torchvision",
+        verify=_place_classifier_available,
+        description="Place categorisation (Places365-style). Needs a trained "
+                    "classifier; pixel statistics alone cannot support it.",
     ))
 
     # -- GPU: pluggable backends ---------------------------------------------

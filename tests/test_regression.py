@@ -1562,3 +1562,663 @@ class TestPerceptionPipelineIntegration:
         assert "ARGUS_NO_PERCEPTION" in src
         assert src.count("self.perception.process(") == 2, \
             "both the swarm and linear paths must feed perception"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Iteration 11: CPU perception expansion
+#
+# The rule every test here defends: Argus must never silently turn an inference
+# into an observation. A measurement and a guess must stay distinguishable all
+# the way to the API.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestChangeDetection:
+    """Departures from a per-camera, time-of-day baseline."""
+
+    def _scene(self, camera_id=1, n=3, ts=None, kind="person"):
+        from backend.services.perception import Entity, EntityKind, BBox, Scene
+        scene = Scene(camera_id=camera_id, timestamp=ts or time.time())
+        for i in range(n):
+            scene.add_entity(Entity(
+                kind=kind, category=kind, track_id=i,
+                bbox=BBox(10.0 + i * 60, 10.0, 60.0 + i * 60, 150.0),
+                confidence=0.9))
+        return scene
+
+    def test_no_anomaly_before_the_baseline_is_ready(self):
+        """An immature baseline must stay silent rather than guess.
+
+        Reporting an anomaly from five samples is reporting inexperience, and
+        it is how anomaly detectors earn a reputation for crying wolf.
+        """
+        from backend.services.perception import ChangeDetector
+        from backend.services.perception.change import MIN_SAMPLES
+        cd = ChangeDetector()
+        for _ in range(5):
+            cd.observe(self._scene(n=3))
+        assert cd.occupancy_anomaly(self._scene(n=500)) is None, \
+            "must not judge before the baseline is mature"
+        assert not cd.baseline(1).is_ready()
+        assert MIN_SAMPLES > 5
+
+    def test_occupancy_anomaly_after_baseline_matures(self):
+        from backend.services.perception.change import ChangeDetector, MIN_SAMPLES
+        cd = ChangeDetector()
+        now = time.time()
+        for i in range(MIN_SAMPLES + 5):
+            cd.observe(self._scene(n=3 if i % 2 else 4, ts=now))
+        obs = cd.occupancy_anomaly(self._scene(n=60, ts=now))
+        assert obs is not None, "60 entities against a mean of ~3 is anomalous"
+        assert obs.kind == "occupancy_anomaly"
+        assert obs.evidence, "an anomaly must show the baseline it broke"
+        assert any("baseline" in e for e in obs.evidence)
+        assert any("standard deviation" in e for e in obs.evidence)
+
+    def test_baselines_are_separated_by_hour_of_day(self):
+        """03:00 and 13:00 are different normals for the same camera.
+
+        Without this, every morning rush is an anomaly and the feature is
+        useless on any camera with a daily rhythm.
+        """
+        from backend.services.perception.change import (BUCKETS, ChangeDetector,
+                                                        MIN_SAMPLES, _bucket)
+        cd = ChangeDetector()
+        night = time.mktime(time.strptime("2026-01-01 03:30", "%Y-%m-%d %H:%M"))
+        noon = time.mktime(time.strptime("2026-01-01 13:30", "%Y-%m-%d %H:%M"))
+        assert _bucket(night) != _bucket(noon)
+
+        for _ in range(MIN_SAMPLES + 5):
+            cd.observe(self._scene(n=1, ts=night))
+            cd.observe(self._scene(n=40, ts=noon))
+
+        # 40 people at noon is normal; 40 people at 03:30 is not.
+        assert cd.occupancy_anomaly(self._scene(n=40, ts=noon)) is None
+        assert cd.occupancy_anomaly(self._scene(n=40, ts=night)) is not None
+
+    def test_appearance_and_disappearance_are_reported(self):
+        from backend.services.perception import ChangeDetector
+        cd = ChangeDetector()
+        cd.entity_changes(self._scene(n=2))
+        obs = cd.entity_changes(self._scene(n=3))
+        kinds = {o.kind for o in obs}
+        assert "object_appeared" in kinds
+        obs2 = cd.entity_changes(self._scene(n=1))
+        assert "object_left_frame" in {o.kind for o in obs2}
+
+    def test_first_frame_reports_nothing(self):
+        """Nothing to compare against is not the same as nothing changed."""
+        from backend.services.perception import ChangeDetector
+        cd = ChangeDetector()
+        assert cd.entity_changes(self._scene(n=5)) == []
+
+    def test_baseline_learns_from_anomalous_frames_too(self):
+        """A persistent new normal must stop being reported as an anomaly."""
+        from backend.services.perception.change import ChangeDetector, MIN_SAMPLES
+        cd = ChangeDetector()
+        now = time.time()
+        for _ in range(MIN_SAMPLES * 3):
+            cd.analyse(self._scene(n=30, ts=now), None)
+        assert cd.occupancy_anomaly(self._scene(n=30, ts=now)) is None, \
+            "30 must be normal once it has been the norm for a long time"
+
+    def test_running_stats_use_constant_memory(self):
+        """Months of footage must not accumulate a sample list."""
+        from backend.services.perception import RunningStat
+        s = RunningStat()
+        for v in range(5000):
+            s.push(float(v % 10))
+        assert s.count == 5000
+        assert 4.0 < s.mean < 5.0
+        assert not any(isinstance(v, (list, tuple, set, dict))
+                       for v in vars(s).values()), \
+            "RunningStat must not retain samples"
+
+
+class TestSceneClassification:
+    """Environment context, and the honesty of its limits."""
+
+    def test_density_scales_with_entity_count(self):
+        from backend.services.perception import density_label
+        assert density_label(0)[0] == "empty"
+        assert density_label(2)[0] == "sparse"
+        assert density_label(8)[0] == "moderate"
+        assert density_label(40)[0] == "crowded"
+
+    def test_classify_attaches_density_without_a_frame(self):
+        from backend.services.perception import Scene, classify_scene
+        scene = Scene(camera_id=1)
+        applied = classify_scene(scene, None)
+        assert applied["density"] == "empty"
+        assert "density" in scene.environment
+        assert scene.environment["entity_count"].value == 0
+
+    def test_measurements_outrank_interpretations(self):
+        """The numbers are certain; the labels drawn from them are not."""
+        from backend.services.perception.scene_classifier import interpret
+        measured = {"mean_brightness": 20.0, "contrast": 10.0,
+                    "detail_variance": 5.0}
+        labels = interpret(measured)
+        assert labels["lighting"][0] == "dark"
+        for _, confidence in labels.values():
+            assert confidence < 1.0, \
+                "an interpretation must never claim certainty"
+
+    def test_no_place_category_is_invented(self):
+        """Pixel statistics cannot support 'this is a car park'."""
+        from backend.services.perception.scene_classifier import interpret
+        labels = interpret({"mean_brightness": 120.0, "contrast": 50.0,
+                            "detail_variance": 300.0})
+        assert "scene_type" not in labels
+        assert "indoor_outdoor" not in labels
+
+    def test_degraded_visibility_is_detected(self):
+        from backend.services.perception.scene_classifier import interpret
+        labels = interpret({"mean_brightness": 120.0, "contrast": 8.0,
+                            "detail_variance": 3.0})
+        assert labels["visibility"][0] == "degraded"
+
+
+class TestPluggableOcr:
+    """Text regions work everywhere; reading them is optional."""
+
+    def test_engine_reports_unavailable_honestly(self):
+        """No engine here, and the registry must say so with a reason."""
+        from backend.services.perception import get_engine
+        engine = get_engine()
+        if not engine.available:
+            assert engine.reason, "unavailability must come with a reason"
+
+    def test_capability_registry_does_not_claim_ocr_it_cannot_do(self):
+        """The bug this guards: pytesseract imports without the binary.
+
+        An import-only probe marks OCR available and the pipeline then fails
+        on the first real frame. Availability must be decided by running the
+        backend, not importing it.
+        """
+        from backend.services.perception import build_default_registry, get_engine
+        reg = build_default_registry()
+        cap = reg.get("ocr")
+        assert cap is not None
+        assert cap.available == get_engine().available, \
+            "the registry must agree with a real functional probe"
+        if not cap.available:
+            assert cap.unavailable_reason
+            assert "text_regions" in cap.unavailable_reason, \
+                "must point at the half that still works"
+
+    def test_region_detection_needs_no_engine(self):
+        """The useful half must work with no OCR engine installed at all."""
+        import numpy as np
+        import cv2
+        from backend.services.perception import find_text_regions
+        img = np.full((240, 640, 3), 245, dtype=np.uint8)
+        cv2.putText(img, "LOADING BAY 7", (30, 130), cv2.FONT_HERSHEY_SIMPLEX,
+                    2.0, (0, 0, 0), 5)
+        regions = find_text_regions(img)
+        assert regions, "MSER must find the painted text"
+        assert any(r.width > 60 for r in regions)
+
+    def test_unread_text_is_recorded_as_unread(self):
+        """Seeing writing you cannot read is a real observation.
+
+        It must be distinguishable both from reading it and from seeing none.
+        """
+        import numpy as np
+        import cv2
+        from backend.services.perception import (EntityKind, Scene, extract_text,
+                                                 get_engine)
+        img = np.full((240, 640, 3), 245, dtype=np.uint8)
+        cv2.putText(img, "EXIT 12B", (40, 140), cv2.FONT_HERSHEY_SIMPLEX,
+                    2.2, (0, 0, 0), 6)
+        scene = Scene(camera_id=1)
+        created = extract_text(scene, img)
+        assert created, "text regions must become entities"
+        for entity in created:
+            assert entity.kind == EntityKind.TEXT.value
+            assert entity.observed("text_readable")
+            if not get_engine().available:
+                assert entity.get("text_readable") is False
+                assert entity.get("ocr_unavailable"), \
+                    "must record why the text could not be read"
+                assert entity.get("text") is None, \
+                    "no engine means no invented characters"
+
+    def test_text_is_bound_to_the_object_it_sits_on(self):
+        from backend.services.perception import (BBox, Entity, EntityKind, Scene,
+                                                 attach_text_to_entities)
+        scene = Scene(camera_id=1)
+        van = Entity(kind=EntityKind.VEHICLE.value, category="truck",
+                     bbox=BBox(0, 0, 400, 300), confidence=0.9)
+        scene.add_entity(van)
+        text = Entity(kind=EntityKind.TEXT.value, category="text",
+                      bbox=BBox(100, 100, 200, 140), confidence=0.5)
+        text.set_attribute("text", "ACME LOGISTICS", 0.7, "ocr")
+        scene.add_entity(text)
+
+        assert attach_text_to_entities(scene) == 1
+        assert van.get("marking") == "ACME LOGISTICS"
+
+
+class TestRelationshipVocabulary:
+    """A wider vocabulary, with the burden of proof kept intact."""
+
+    def _person(self, x=100.0):
+        from backend.services.perception import BBox, Entity, EntityKind
+        return Entity(kind=EntityKind.PERSON.value, category="person",
+                      bbox=BBox(x, 100.0, x + 50, 250.0), confidence=0.9)
+
+    def test_single_frame_never_asserts_behaviour(self):
+        """The core guarantee: geometry cannot produce 'following'.
+
+        Following, entering and queuing are claims about motion over time. A
+        single frame has no motion, so inferring them there would be invention.
+        """
+        from backend.services.perception import (BEHAVIOURAL_PREDICATES, Scene,
+                                                 infer_relationships)
+        from backend.services.perception.relationships import infer_all
+        scene = Scene(camera_id=1)
+        for x in (100.0, 160.0, 220.0, 280.0):
+            scene.add_entity(self._person(x))
+        rels = infer_all(scene)
+        assert rels, "four adjacent people must produce some relationships"
+        for rel in rels:
+            assert rel.predicate not in BEHAVIOURAL_PREDICATES, \
+                f"single frame must not assert behavioural '{rel.predicate}'"
+
+    def test_wearing_holding_and_carrying_are_distinguished(self):
+        from backend.services.perception import (BBox, Entity, EntityKind,
+                                                 RelationKind, Scene)
+        from backend.services.perception.relationships import infer_all
+        scene = Scene(camera_id=1)
+        person = self._person(100.0)          # (100,100)-(150,250)
+        scene.add_entity(person)
+        # Helmet in the upper-body band.
+        scene.add_entity(Entity(kind=EntityKind.OBJECT.value, category="helmet",
+                                bbox=BBox(105, 105, 145, 150), confidence=0.8))
+        # Phone in the hand zone (30-80% of height => y 145..220).
+        scene.add_entity(Entity(kind=EntityKind.OBJECT.value,
+                                category="cell phone",
+                                bbox=BBox(115, 160, 140, 195), confidence=0.8))
+        # Backpack overlapping the body generally.
+        scene.add_entity(Entity(kind=EntityKind.OBJECT.value, category="backpack",
+                                bbox=BBox(100, 130, 150, 220), confidence=0.8))
+
+        predicates = {r.predicate for r in infer_all(scene)}
+        assert RelationKind.WEARING.value in predicates
+        assert RelationKind.HOLDING.value in predicates
+        assert RelationKind.CARRYING.value in predicates
+
+    def test_geometry_only_claims_stay_below_certainty(self):
+        """Boxes overlapping is suggestive, never conclusive.
+
+        The bound is hard-coded rather than imported from the module under
+        test. Importing GEOMETRY_CEILING would make this tautological - raise
+        the constant and the assertion rises with it, so the test could never
+        catch the overclaim it exists to catch.
+        """
+        from backend.services.perception import BBox, Entity, EntityKind, Scene
+        from backend.services.perception.relationships import (GEOMETRY_CEILING,
+                                                               infer_all)
+        ABSOLUTE_MAX = 0.8
+        assert GEOMETRY_CEILING <= ABSOLUTE_MAX, \
+            "the geometry ceiling itself must stay well below certainty"
+
+        scene = Scene(camera_id=1)
+        person = self._person(100.0)
+        scene.add_entity(person)
+        scene.add_entity(Entity(kind=EntityKind.OBJECT.value, category="backpack",
+                                bbox=BBox(100, 100, 150, 250), confidence=0.9))
+        semantic = {"carrying", "holding", "wearing", "riding", "inside",
+                    "occluding"}
+        checked = 0
+        for rel in infer_all(scene):
+            if rel.predicate in semantic:
+                checked += 1
+                assert rel.confidence <= ABSOLUTE_MAX, \
+                    f"{rel.predicate} at {rel.confidence} overclaims"
+        assert checked, "the fixture must produce semantic relationships"
+
+    def test_riding_versus_inside(self):
+        from backend.services.perception import (BBox, Entity, EntityKind,
+                                                 RelationKind, Scene)
+        from backend.services.perception.relationships import infer_containment
+
+        cyclist = Scene(camera_id=1)
+        cyclist.add_entity(Entity(kind=EntityKind.PERSON.value, category="person",
+                                  bbox=BBox(100, 80, 150, 220), confidence=0.9))
+        cyclist.add_entity(Entity(kind=EntityKind.VEHICLE.value,
+                                  category="bicycle",
+                                  bbox=BBox(90, 160, 170, 260), confidence=0.9))
+        assert any(r.predicate == RelationKind.RIDING.value
+                   for r in infer_containment(cyclist))
+
+        driver = Scene(camera_id=1)
+        driver.add_entity(Entity(kind=EntityKind.PERSON.value, category="person",
+                                 bbox=BBox(120, 120, 160, 200), confidence=0.9))
+        driver.add_entity(Entity(kind=EntityKind.VEHICLE.value, category="car",
+                                 bbox=BBox(50, 80, 350, 280), confidence=0.9))
+        assert any(r.predicate == RelationKind.INSIDE.value
+                   for r in infer_containment(driver))
+
+    def test_every_relationship_carries_its_basis(self):
+        from backend.services.perception import BBox, Entity, EntityKind, Scene
+        from backend.services.perception.relationships import infer_all
+        scene = Scene(camera_id=1)
+        scene.add_entity(self._person(100.0))
+        scene.add_entity(self._person(170.0))
+        scene.add_entity(Entity(kind=EntityKind.VEHICLE.value, category="car",
+                                bbox=BBox(300, 120, 520, 260), confidence=0.9))
+        rels = infer_all(scene)
+        assert rels
+        for rel in rels:
+            assert rel.evidence, f"{rel.predicate} asserted with no evidence"
+            assert rel.is_supported, f"{rel.predicate} is unsupported"
+
+    def test_relationship_lifecycle_distinguishes_momentary_from_sustained(self):
+        from backend.services.perception import Relationship
+        now = time.time()
+        rel = Relationship(subject_id="a", predicate="near", object_id="b",
+                           evidence={"pixel_distance": 10.0},
+                           first_observed=now, last_observed=now)
+        assert rel.status == "momentary"
+        for i in range(8):
+            rel.reinforce(timestamp=now + i + 1)
+        assert rel.status == "sustained"
+        assert rel.duration >= 5.0
+        assert rel.observation_count == 9
+
+    def test_behavioural_claim_from_one_sighting_is_unsupported(self):
+        """The schema itself refuses to call a single frame 'following'."""
+        from backend.services.perception import Relationship
+        rel = Relationship(subject_id="a", predicate="following", object_id="b",
+                           confidence=0.9, evidence={"heading_cosine": 0.95})
+        assert rel.is_behavioural
+        assert not rel.is_supported, \
+            "one frame cannot support a behavioural claim"
+        rel.reinforce()
+        assert rel.is_supported
+
+    def test_relationship_lifecycle_survives_serialisation(self):
+        """Restoring must not reset two minutes of evidence to a fresh sighting."""
+        from backend.services.perception import BBox, Entity, EntityKind, Scene
+        scene = Scene(camera_id=1)
+        a = Entity(kind=EntityKind.PERSON.value, category="person",
+                   bbox=BBox(0, 0, 50, 150), confidence=0.9)
+        b = Entity(kind=EntityKind.PERSON.value, category="person",
+                   bbox=BBox(60, 0, 110, 150), confidence=0.9)
+        scene.add_entity(a)
+        scene.add_entity(b)
+        from backend.services.perception import Relationship
+        rel = Relationship(subject_id=a.entity_id, predicate="near",
+                           object_id=b.entity_id, evidence={"pixel_distance": 10})
+        for _ in range(6):
+            rel.reinforce()
+        scene.add_relationship(rel)
+
+        restored = Scene.from_dict(scene.to_dict())
+        assert restored.to_dict() == scene.to_dict()
+        assert restored.relationships[0].observation_count == 7
+        assert restored.relationships[0].status == rel.status
+
+
+class TestExpandedAttributes:
+    """More cheap attributes, each with an honest confidence."""
+
+    def _frame(self, colour=(40, 40, 200), size=(300, 400)):
+        import numpy as np
+        img = np.zeros((size[0], size[1], 3), dtype=np.uint8)
+        img[:, :] = colour
+        return img
+
+    def test_size_class_is_frame_relative(self):
+        from backend.services.perception import BBox
+        from backend.services.perception.attributes import size_class
+        assert size_class(BBox(0, 0, 10, 10), 1920, 1080) == "tiny"
+        assert size_class(BBox(0, 0, 1900, 1000), 1920, 1080) == "dominant"
+
+    def test_frame_position_is_reported(self):
+        from backend.services.perception import BBox
+        from backend.services.perception.attributes import frame_position
+        assert frame_position(BBox(0, 0, 40, 40), 900, 900) == "top-left"
+        assert frame_position(BBox(400, 400, 500, 500), 900, 900) == "middle"
+
+    def test_clipped_boxes_suppress_the_posture_hint(self):
+        """A half-visible person has a meaningless aspect ratio.
+
+        Emitting 'horizontal' for someone walking out of frame is exactly the
+        kind of confident nonsense the source-authority rule exists to stop.
+        """
+        from backend.services.perception import BBox, Entity, EntityKind
+        from backend.services.perception.attributes import enrich_entity
+        frame = self._frame()
+        clipped = Entity(kind=EntityKind.PERSON.value, category="person",
+                         bbox=BBox(0, 250, 200, 300), confidence=0.9)
+        enrich_entity(clipped, frame)
+        assert clipped.get("clipped_by_frame_edge") is True
+        assert not clipped.observed("posture"), \
+            "a clipped box must not produce a posture claim"
+
+    def test_dark_crops_are_flagged_as_unreliable(self):
+        from backend.services.perception import BBox, Entity, EntityKind
+        from backend.services.perception.attributes import enrich_entity
+        dark = self._frame(colour=(5, 5, 5))
+        entity = Entity(kind=EntityKind.PERSON.value, category="person",
+                        bbox=BBox(100, 100, 160, 260), confidence=0.9)
+        enrich_entity(entity, dark)
+        assert entity.get("brightness") is not None
+        assert entity.get("appearance_reliable") is False, \
+            "colour read from a near-black crop must be marked unreliable"
+
+    def test_palette_reports_more_than_the_winner(self):
+        import numpy as np
+        from backend.services.perception.attributes import colour_palette
+        crop = np.zeros((100, 100, 3), dtype=np.uint8)
+        crop[:50, :] = (200, 40, 40)     # blue-ish top (BGR)
+        crop[50:, :] = (40, 40, 200)     # red-ish bottom
+        palette = colour_palette(crop)
+        assert len(palette) >= 2
+        assert sum(share for _, share in palette) <= 1.0001
+        names = {name for name, _ in palette}
+        assert "red" in names and "blue" in names
+
+    def test_tiny_crops_yield_no_colour_claim(self):
+        import numpy as np
+        from backend.services.perception.attributes import colour_palette
+        assert colour_palette(np.zeros((4, 4, 3), dtype=np.uint8)) == []
+
+
+class TestEvidenceApi:
+    """Every conclusion must be able to show its work."""
+
+    def _track_with_history(self):
+        from backend.services.perception import BBox, Entity, EntityKind, Scene
+        from backend.services.perception import TrackStore
+        store = TrackStore()
+        base = time.time()
+        for i in range(12):
+            scene = Scene(camera_id=1, timestamp=base + i * 0.5)
+            scene.add_entity(Entity(
+                kind=EntityKind.PERSON.value, category="person", track_id=7,
+                bbox=BBox(100.0 + i, 100.0, 150.0 + i, 250.0), confidence=0.9))
+            store.update_from_scene(scene)
+        return store, store.get(7)
+
+    def test_chain_separates_measurement_from_inference(self):
+        from backend.services.perception import chain_from_track
+        _, track = self._track_with_history()
+        chain = chain_from_track(track)
+        assert chain.items, "a chain with no items explains nothing"
+        assert chain.supporting_measurements(), \
+            "a grounded chain needs at least one measurement"
+        for item in chain.supporting_measurements():
+            assert item.is_measurement
+        for item in chain.supporting_inferences():
+            assert not item.is_measurement
+
+    def test_ungrounded_chain_is_not_actionable(self):
+        """A conclusion resting only on other inferences must not be actioned."""
+        from backend.services.perception import EvidenceChain
+        chain = EvidenceChain(assessment="person is loitering", confidence=0.95,
+                              kind="dwell")
+        chain.add("appears to be waiting", is_measurement=False)
+        assert not chain.is_grounded
+        assert not chain.is_actionable, \
+            "high confidence must not rescue an ungrounded claim"
+        assert chain.status in {"unsupported", "derived", "weak"}
+
+    def test_grounded_high_confidence_chain_is_actionable(self):
+        from backend.services.perception import EvidenceChain
+        chain = EvidenceChain(assessment="stationary for 90s", confidence=0.8,
+                              kind="dwell")
+        chain.add("displacement 12 px over 90 s", is_measurement=True, value=12)
+        chain.add("consistent with waiting", is_measurement=False)
+        assert chain.is_grounded and chain.is_actionable
+        assert chain.status == "supported"
+
+    def test_explain_track_keeps_the_two_apart_and_warns(self):
+        from backend.services.perception import explain_track
+        _, track = self._track_with_history()
+        out = explain_track(track)
+        assert "measured" in out and "inferred" in out
+        assert isinstance(out["measured"], list)
+        assert out.get("note"), \
+            "the explain payload must warn against presenting inference as fact"
+
+    def test_pipeline_exposes_explain(self):
+        from backend.services.perception import PerceptionPipeline
+        pipeline = PerceptionPipeline()
+        base = time.time()
+        for i in range(10):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [100 + i, 100, 150 + i, 250],
+                                  "track_id": 3}], None, base + i * 0.4)
+        explained = pipeline.explain(3)
+        assert explained is not None
+        assert "measured" in explained
+        assert pipeline.explain(999) is None
+
+    def test_evidence_text_is_human_readable(self):
+        from backend.services.perception import EvidenceChain
+        chain = EvidenceChain(assessment="vehicle stopped in a fire lane",
+                              confidence=0.62, kind="zone_violation")
+        chain.add("stationary 45 s", is_measurement=True, value=45)
+        chain.add("inside zone 'fire_lane'", is_measurement=True)
+        text = chain.explain()
+        assert "fire lane" in text
+        assert "45" in text
+
+
+class TestPerceptionStagesStayHonest:
+    """Cross-cutting guarantees over the whole expanded pipeline."""
+
+    def test_capability_registry_reports_new_capabilities(self):
+        from backend.services.perception import build_default_registry
+        reg = build_default_registry()
+        for name in ("text_regions", "scene_classification", "change_detection",
+                     "rich_relationships"):
+            cap = reg.get(name)
+            assert cap is not None, f"{name} must be registered"
+            assert cap.available, f"{name} is pure-CPU and must run here"
+            assert cap.description
+
+    def test_unavailable_capabilities_say_how_to_enable_them(self):
+        """'Unavailable' with no reason is a dead end for an operator."""
+        from backend.services.perception import build_default_registry
+        reg = build_default_registry()
+        for cap in reg.all():
+            if not cap.available:
+                assert cap.unavailable_reason, \
+                    f"{cap.name} is unavailable with no explanation"
+
+    def test_pipeline_never_raises_on_a_broken_frame(self):
+        """Perception enriches a frame; it must never stop one."""
+        import numpy as np
+        from backend.services.perception import PerceptionPipeline
+        pipeline = PerceptionPipeline(enable_text=True)
+        rubbish = [
+            None,
+            np.zeros((0, 0, 3), dtype=np.uint8),
+            np.zeros((10, 10), dtype=np.uint8),      # wrong channel count
+            "not a frame",
+        ]
+        for frame in rubbish:
+            result = pipeline.process(1, [{"class_name": "person",
+                                           "confidence": 0.8,
+                                           "bbox": [1, 1, 20, 60],
+                                           "track_id": 1}], frame)
+            assert result is not None
+
+    def test_pipeline_reports_per_stage_cost(self):
+        from backend.services.perception import PerceptionPipeline
+        pipeline = PerceptionPipeline()
+        for _ in range(3):
+            pipeline.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [10, 10, 60, 150], "track_id": 1}])
+        stats = pipeline.stats()
+        assert stats["stage_ms"], "stage costs must be measured, not assumed"
+        assert stats["stages_enabled"]["change_detection"] is True
+
+    def test_text_stage_is_rate_limited(self):
+        """12 ms per frame for signage that never changes is waste."""
+        from backend.services.perception import PerceptionPipeline
+        pipeline = PerceptionPipeline(enable_text=True, text_interval_s=5.0)
+        now = time.time()
+        assert pipeline._text_due(1, now) is True
+        assert pipeline._text_due(1, now + 1.0) is False
+        assert pipeline._text_due(1, now + 6.0) is True
+        # Rate limiting is per camera, not global.
+        assert pipeline._text_due(2, now + 6.0) is True
+
+
+class TestPerceptionKeepsNoPersistentAppearanceData:
+    """Appearance data is re-identifying; persisting it creates an obligation.
+
+    The perception layer is currently in-memory only, which is why the
+    retention policy did not need extending to ship the CPU phase. If that
+    ever changes, retention must change in the same commit - so this test
+    fails the moment perception learns to write to disk.
+    """
+
+    def test_perception_layer_does_not_write_to_the_database(self):
+        import re
+        pkg = PROJECT_ROOT / "backend" / "services" / "perception"
+        offenders = []
+        for path in sorted(pkg.glob("*.py")):
+            src = path.read_text(encoding="utf-8")
+            if re.search(r"INSERT\s+INTO|UPDATE\s+\w+\s+SET|sqlite3|get_db|"
+                         r"event_store|\.commit\(\)", src, re.IGNORECASE):
+                offenders.append(path.name)
+        assert not offenders, (
+            f"{offenders} now persist perception data. Appearance attributes "
+            "and OCR text are re-identifying: extend backend/services/"
+            "management/retention.py in this same change, then update this "
+            "test.")
+
+    def test_track_and_attribute_history_are_bounded(self):
+        """Memory-only is not a licence to grow without limit."""
+        from backend.services.perception.temporal import (MAX_ATTRIBUTE_HISTORY,
+                                                          MAX_TRAJECTORY,
+                                                          TrackStore)
+        assert MAX_TRAJECTORY <= 1024
+        assert MAX_ATTRIBUTE_HISTORY <= 64
+        store = TrackStore(max_tracks=8)
+        from backend.services.perception import BBox, Entity, EntityKind, Scene
+        base = time.time()
+        for i in range(50):
+            scene = Scene(camera_id=1, timestamp=base + i)
+            scene.add_entity(Entity(kind=EntityKind.PERSON.value,
+                                    category="person", track_id=i,
+                                    bbox=BBox(0, 0, 10, 20), confidence=0.9))
+            store.update_from_scene(scene)
+        assert len(store) <= 8, "TrackStore must evict rather than grow"
+
+    def test_change_baselines_store_statistics_not_imagery(self):
+        """A baseline must never become an undeclared image store."""
+        from backend.services.perception import ChangeDetector
+        from backend.services.perception.change import GRID
+        cd = ChangeDetector()
+        baseline = cd.baseline(1)
+        # The only pixel-derived state is a GRID x GRID intensity signature.
+        assert GRID <= 32, "the signature must stay a thumbnail, not a frame"
+        assert baseline.signature is None
+        assert baseline.signature_baseline is None
