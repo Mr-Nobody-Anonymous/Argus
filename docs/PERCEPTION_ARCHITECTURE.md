@@ -146,18 +146,38 @@ entity appears for a legible sign at 720p.
 > formats, aspect priors and a plate detector). General OCR is a separate
 > `Source.OCR` producing `TEXT` entities that may belong to no other object.
 
-### Phase 3 — Temporal intelligence · ~3 weeks · CPU
+### Phase 3 — Temporal intelligence ✅ **done** (`temporal.py`, `scene_graph.py`)
 
-Promote `track_id` into a durable `Track`: `first_seen`, `last_seen`,
-trajectory, velocity, acceleration, appearance history, zones visited, cameras
-seen, state changes.
+`Track` accumulates across frames: trajectory (bounded ring), velocity,
+direction, path-vs-displacement, attribute history, zones, cameras, status
+(`active` → `stale` → `lost`).
 
-Enables: loitering, re-entry, circling, abandoned object, following, crowd
-forming, appearance/disappearance, dwell anomalies.
+`SceneGraph` makes relationships first-class and *persistent*, keyed by
+`track_id` rather than the per-frame `entity_id` — an entity-keyed graph could
+never accumulate anything. Edge confidence grows logarithmically with sustained
+observation and decays linearly once unsupported, so *"was true once"* never
+reads as *"is true"*.
 
-**Acceptance:** a 60 s clip yields a track whose dwell time matches
-ground truth ±10%; an object removed from the scene raises exactly one
-`disappeared` observation, not one per frame.
+Detectors implemented: **dwell** (requires duration *and* stillness — a long
+walk is not loitering), **pacing** (path-to-displacement ratio), **following**
+(both moving, headings agreeing, one behind the other), **approach/separation**
+(distance trend), **disappearance** (established tracks only).
+
+**Two bugs found by testing, both fixed:**
+
+1. **Aging used the wall clock**, so replaying archived footage marked every
+   track `lost` on arrival — silently disabling all temporal analysis on
+   recorded video. Ages are now measured in *stream time*.
+2. Relationship edges had the same flaw and decayed to zero instantly on
+   replay.
+
+**Measured on the live demo clip:** 47 tracks, 22 active, 47 relationships,
+colour attributes and following edges accumulated — at **0.33 ms/frame for 15
+entities** against 108 ms for detection (0.3% overhead). Camera FPS unchanged
+at 14.78.
+
+**Acceptance:** dwell fires exactly **once**, not once per frame ✓; trajectory
+memory is bounded ✓; replayed footage still ages correctly ✓.
 
 ### Phase 4 — VLM integration · ~2 weeks · **GPU required**
 
@@ -169,9 +189,9 @@ unusual activity".
 `Source.VLM` and a crop reference; the pipeline's FPS is unchanged when the VLM
 is disabled.
 
-### Phase 5 — Scene graph + reasoning · ~3 weeks · CPU
+### Phase 5 — Reasoning · ~2 weeks · CPU  *(scene graph now done in Phase 3)*
 
-Relationships across time, then a reasoning layer that composes observations
+The temporal scene graph exists; what remains is the reasoning layer that composes observations
 into assessments **with evidence lists**. Output shape is fixed:
 
 ```
@@ -219,6 +239,55 @@ existing swarm/consortium broker earns its keep.
 
 **Acceptance:** measured cost per frame drops versus running every analyser
 unconditionally, with no loss in recall on a labelled clip.
+
+---
+
+## 3b. The capability registry ✅ **implemented** (`capabilities.py`)
+
+The swarm auctions a time budget between three hard-coded agents. It cannot
+answer the question that matters — *"what can I run, what will it cost, and
+what would it tell me that I do not already know?"* — because nothing described
+the analyses themselves.
+
+Each capability now declares its tier, cost, what it **provides**, what it
+**requires**, and whether its backend actually loaded:
+
+```
+GET /api/v1/perception/capabilities   ->  8/14 available on this host, gpu=false
+
+  OK  cpu  object_detection      108.0 ms   provides bbox, category
+  OK  cpu  tracking                4.0 ms   requires detection
+  OK  cpu  temporal_analysis       1.0 ms   provides speed, direction, dwell
+  OK  cpu  relationships           2.0 ms   provides near, carrying, following
+  OK  cpu  basic_attributes        3.0 ms   provides dominant_colour, size
+  OK  cpu  pose / face / lpr     35-60 ms
+  --  cpu  ocr                            ModuleNotFoundError: paddleocr
+  --  gpu  segmentation / open_vocabulary / action_recognition / vlm
+                                          requires a CUDA device; none detected
+```
+
+**Availability is probed by importing, never assumed from config** — a package
+can be declared in `requirements.txt` and still fail to load (missing system
+library, wrong wheel, unsupported CPU). Guessing would advertise capabilities
+that do not work.
+
+From this the scheduler computes **information gain per millisecond**:
+
+```python
+registry.plan(context={"person", "detection", "track_id"}, budget_ms=100)
+```
+
+- a capability whose `requires` is unmet is **inapplicable** — running a plate
+  reader on a frame with no vehicle is pure waste, and it is excluded, not
+  merely deprioritised;
+- a capability whose `provides` is **already known** scores zero, so the budget
+  goes to something that would actually add information;
+- `record_cost()` replaces estimates with measured values, exponentially
+  smoothed so one slow frame does not distort scheduling.
+
+This is what turns the swarm from a resource auction into something that
+reasons about information gain. Wiring `plan()` into the consortium broker is
+Phase 7.
 
 ---
 
@@ -281,8 +350,8 @@ new fields:
 ## 7. Suggested order
 
 1. **Phase 1** ✅ — nothing else is joinable without it
-2. **Phase 3** (temporal) — biggest capability gain per CPU-hour, no GPU
-3. **Phase 2** CPU items (colour, scene class, OCR)
+2. **Phase 3** ✅ (temporal + scene graph) — done; 0.3% frame cost
+3. **Phase 2** CPU items — colour ✅ done; scene classification and OCR remain
 4. **Phase 6** (memory) — makes everything retrievable
 5. **Phase 5** (reasoning) — needs 3 + 6 to be meaningful
 6. **Phase 2** GPU items + **Phase 4** (VLM) — when hardware exists

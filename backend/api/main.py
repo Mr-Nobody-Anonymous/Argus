@@ -1193,6 +1193,60 @@ async def health_check():
         }
 
 
+# ==================== Perception ====================
+# The accumulated world model: what Argus knows about each tracked entity over
+# time, and what it can currently run on this hardware.
+
+@app.get("/api/v1/perception/tracks", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_perception_tracks():
+    """Every active track with its attributes, relationships and inferences."""
+    try:
+        from backend.services.perception import get_pipeline
+        pipeline = get_pipeline()
+        return {"tracks": pipeline.active_tracks(), "stats": pipeline.stats()}
+    except Exception as e:
+        logger.error(f"Error reading perception tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/perception/tracks/{track_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_perception_track(track_id: int):
+    """Everything reliably known about one entity.
+
+    Measurement and inference are kept in separate keys so a reader can always
+    tell evidence from conclusion.
+    """
+    try:
+        from backend.services.perception import get_pipeline
+        summary = get_pipeline().describe_track(track_id)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading track {track_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/perception/capabilities", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_perception_capabilities():
+    """What Argus can run here, what it costs, and why anything is unavailable.
+
+    Availability is probed by importing each backend, never assumed from
+    config: a package can be declared and still fail to load.
+    """
+    try:
+        from backend.services.perception import get_registry
+        return get_registry().report()
+    except Exception as e:
+        logger.error(f"Error reading capabilities: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/metrics", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
 async def get_metrics():
     """Get system metrics"""

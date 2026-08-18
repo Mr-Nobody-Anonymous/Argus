@@ -625,7 +625,7 @@ log line, with any `extra={...}` fields merged in — so logs can be filtered by
 pytest        # collects exactly these two suites (see pytest.ini)
 ```
 
-**99 tests, all passing** in ~18 s (1 skipped when the events table is empty).
+**126 tests, all passing** in ~17 s (1 skipped when the events table is empty).
 
 Every push and pull request runs these on Python 3.11 and 3.13 via
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
@@ -636,7 +636,7 @@ scan, a gitignore-hygiene check, and a frontend build. See
 
 | Suite | Tests | Guards against |
 |---|---|---|
-| `tests/test_regression.py` | 76 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules |
+| `tests/test_regression.py` | 103 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning |
 | `tests/test_api_security.py` | 23 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, orphaned/duplicate role grants, plaintext secrets in config |
 
 These are **mutation-verified** — deliberately reintroducing a bug (e.g. the

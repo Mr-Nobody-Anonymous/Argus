@@ -130,7 +130,13 @@ jobs:
           offenders = {}
           for path in sorted(pathlib.Path("backend/services/perception").glob("*.py")):
               roots = set()
-              for node in ast.walk(ast.parse(path.read_text())):
+              tree = ast.parse(path.read_text())
+              # MODULE-LEVEL imports only. An import inside a function is lazy:
+              # it runs when that feature is used, not when the package loads,
+              # so it does not break importability on a machine without torch.
+              # Optional backends (cv2 for colour, torch for the CUDA probe)
+              # are deliberately deferred that way.
+              for node in tree.body:
                   if isinstance(node, ast.Import):
                       for a in node.names:
                           roots.add(a.name.split(".")[0])

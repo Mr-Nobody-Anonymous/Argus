@@ -1182,3 +1182,383 @@ class TestCanonicalPerceptionModel:
         assert BBox.from_any("garbage") is None
         # Inverted corners are normalised, not left to produce negative area.
         assert BBox.from_any([3, 4, 1, 2]).area == 4.0
+
+
+class TestTemporalIntelligence:
+    """Tracks must accumulate honestly and bound their own memory."""
+
+    def _walk(self, pipeline, track_id=1, frames=20, dx=10, t0=None, camera=1):
+        import time as _t
+        t0 = t0 if t0 is not None else _t.time()
+        for i in range(frames):
+            pipeline.process(camera, [{
+                "class_name": "person", "confidence": 0.9,
+                "bbox": [100 + i * dx, 100, 150 + i * dx, 300],
+                "track_id": track_id,
+            }], timestamp=t0 + i * 0.2)
+        return t0
+
+    def test_track_accumulates_across_frames(self):
+        from backend.services.perception import PerceptionPipeline
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        self._walk(pipe, frames=20)
+        track = pipe.tracks.get(1)
+        assert track.frame_count == 20
+        assert track.duration > 3.5
+        assert track.direction() == "east"
+        assert track.displacement() > 150
+
+    def test_replaying_archived_footage_does_not_mark_tracks_lost(self):
+        """Ages must be measured in stream time, not wall-clock time.
+
+        Replay and forensic review both feed timestamps from the past. Aging
+        against `time.time()` marks every track lost on arrival, which silently
+        disables all temporal analysis on recorded video.
+        """
+        import time as _t
+        from backend.services.perception import PerceptionPipeline
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        self._walk(pipe, frames=20, t0=_t.time() - 3600)  # an hour old
+
+        track = pipe.tracks.get(1)
+        assert track.status() == "active", "replayed footage must not age out"
+        assert len(pipe.tracks.all()) == 1
+        assert pipe.graph is not None
+
+    def test_stationary_is_not_confused_with_absent_or_slow(self):
+        from backend.services.perception import PerceptionPipeline
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        self._walk(pipe, track_id=2, frames=20, dx=0)
+        assert pipe.tracks.get(2).is_stationary() is True
+
+        pipe2 = PerceptionPipeline(enable_attributes=False)
+        self._walk(pipe2, track_id=3, frames=20, dx=30)
+        assert pipe2.tracks.get(3).is_stationary() is False
+
+    def test_dwell_requires_both_duration_and_stillness(self):
+        """A long walk is not loitering; standing still briefly is not either."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline, detect_dwell
+
+        t0 = _t.time()
+        walking = PerceptionPipeline(enable_attributes=False)
+        self._walk(walking, track_id=4, frames=100, dx=15, t0=t0)
+        assert detect_dwell(walking.tracks.get(4)) is None, "walking is not dwelling"
+
+        still = PerceptionPipeline(enable_attributes=False)
+        # 0.2 s spacing gives only ~20 s over 100 frames, below the 30 s
+        # threshold - feed a longer span so the duration condition is actually met.
+        for i in range(100):
+            still.process(1, [{"class_name": "person", "confidence": 0.9,
+                               "bbox": [200, 100, 250, 300], "track_id": 5}],
+                          timestamp=t0 + i * 0.5)
+        obs = detect_dwell(still.tracks.get(5))
+        assert obs is not None and obs.evidence, "dwell must report its evidence"
+
+    def test_pacing_uses_path_to_displacement_ratio(self):
+        import time as _t
+        from backend.services.perception import PerceptionPipeline, detect_pacing
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for i in range(80):
+            x = 200 + (150 if (i // 10) % 2 else 0)
+            pipe.process(1, [{"class_name": "person", "confidence": 0.9,
+                              "bbox": [x, 100, x + 50, 300], "track_id": 6}],
+                         timestamp=t0 + i * 0.25)
+        obs = detect_pacing(pipe.tracks.get(6))
+        assert obs is not None
+        assert obs.metadata["ratio"] > 3.0
+
+    def test_observation_fires_once_not_every_frame(self):
+        """Re-reporting each frame would flood the feed and bury real events."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        fired = []
+        for i in range(120):
+            r = pipe.process(1, [{"class_name": "person", "confidence": 0.9,
+                                  "bbox": [200, 100, 250, 300], "track_id": 7}],
+                             timestamp=t0 + i * 0.5)
+            fired += [o.kind for o in r.observations]
+        assert fired.count("dwell") == 1, f"dwell fired {fired.count('dwell')} times"
+
+    def test_disappearance_needs_an_established_track(self):
+        """A one-frame blip vanishing is a false positive, not a disappearance."""
+        from backend.services.perception import Track, detect_disappearance
+
+        blip = Track(track_id=8, kind="person", category="person")
+        blip.frame_count = 2
+        blip.lost_at = blip.last_seen + 11
+        assert detect_disappearance(blip) is None
+
+    def test_trajectory_memory_is_bounded(self):
+        """A camera running for a week must not grow an unbounded history."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline
+        from backend.services.perception.temporal import MAX_TRAJECTORY
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        self._walk(pipe, track_id=9, frames=MAX_TRAJECTORY + 200, dx=1,
+                   t0=_t.time())
+        assert len(pipe.tracks.get(9).trajectory) == MAX_TRAJECTORY
+
+    def test_track_store_evicts_when_over_capacity(self):
+        from backend.services.perception import TrackStore
+        from backend.services.perception.observation import Scene, Entity
+
+        store = TrackStore(max_tracks=50)
+        for i in range(200):
+            scene = Scene(camera_id=1)
+            scene.timestamp = 1000.0 + i
+            scene.add_entity(Entity(kind="person", category="person",
+                                    track_id=i, bbox=[0, 0, 10, 20]))
+            store.update_from_scene(scene)
+        assert len(store) <= 50
+
+    def test_attribute_history_is_kept_when_sources_disagree(self):
+        """Disagreement is information; overwriting it destroys the audit trail."""
+        from backend.services.perception import Track, Source
+
+        track = Track(track_id=10, kind="vehicle", category="car")
+        track.set_attribute("plate", "AAA111", 0.9, Source.DETECTOR.value)
+        track.set_attribute("plate", "BBB222", 0.5, Source.LPR.value)
+        assert track.get("plate") == "BBB222", "specialist must win"
+        assert len(track.attribute_history["plate"]) == 2, "history must be kept"
+
+
+class TestSceneGraphOverTime:
+    """Relationships must strengthen with evidence and decay without it."""
+
+    def test_confidence_grows_with_sustained_observation(self):
+        from backend.services.perception import SceneGraph
+
+        graph = SceneGraph()
+        once = graph.observe(1, "near", 2, distance=50.0, timestamp=1000.0)
+        first = once.confidence
+        for i in range(30):
+            edge = graph.observe(1, "near", 2, distance=50.0,
+                                 timestamp=1000.0 + i * 0.1)
+        assert edge.confidence > first
+        assert edge.confidence <= 0.92, "geometry alone must never reach certainty"
+
+    def test_unsupported_edge_decays_then_expires(self):
+        """'Was true once' must not read as 'is true'."""
+        from backend.services.perception import SceneGraph
+        from backend.services.perception.scene_graph import EDGE_TTL_S
+
+        graph = SceneGraph()
+        edge = graph.observe(1, "near", 2, distance=50.0, timestamp=1000.0)
+        fresh = edge.confidence
+
+        edge.reference_time = 1000.0 + EDGE_TTL_S / 2
+        assert edge.confidence < fresh, "a stale claim must decay"
+        edge.reference_time = 1000.0 + EDGE_TTL_S + 1
+        assert edge.is_expired()
+        assert graph.prune(now=1000.0 + EDGE_TTL_S + 1) == 1
+
+    def test_approach_detected_from_shrinking_distance(self):
+        from backend.services.perception import SceneGraph
+
+        graph = SceneGraph()
+        for i in range(12):
+            graph.observe(1, "near", 2, distance=300.0 - i * 20,
+                          timestamp=1000.0 + i * 0.2)
+        assert graph.get(1, "near", 2).trend() == "approaching"
+
+    def test_separating_is_distinguished_from_approaching(self):
+        from backend.services.perception import SceneGraph
+
+        graph = SceneGraph()
+        for i in range(12):
+            graph.observe(1, "near", 2, distance=50.0 + i * 20,
+                          timestamp=1000.0 + i * 0.2)
+        assert graph.get(1, "near", 2).trend() == "separating"
+
+    def test_following_requires_movement_and_agreeing_headings(self):
+        """Two people standing near each other are queuing, not following."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline, SceneGraph
+        from backend.services.perception.scene_graph import detect_following
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for i in range(20):  # both stationary, side by side
+            pipe.process(1, [
+                {"class_name": "person", "confidence": .9,
+                 "bbox": [100, 100, 150, 300], "track_id": 1},
+                {"class_name": "person", "confidence": .9,
+                 "bbox": [200, 100, 250, 300], "track_id": 2},
+            ], timestamp=t0 + i * 0.2)
+        graph = SceneGraph()
+        assert not detect_following(pipe.tracks.all(), graph), \
+            "stationary people must not be reported as following"
+
+    def test_following_detected_when_moving_together(self):
+        import time as _t
+        from backend.services.perception import PerceptionPipeline, SceneGraph
+        from backend.services.perception.scene_graph import detect_following
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for i in range(30):
+            x = 100 + i * 12
+            pipe.process(1, [
+                {"class_name": "person", "confidence": .9,
+                 "bbox": [x, 100, x + 50, 300], "track_id": 1},
+                {"class_name": "person", "confidence": .9,
+                 "bbox": [x - 80, 100, x - 30, 300], "track_id": 2},
+            ], timestamp=t0 + i * 0.2)
+        graph = SceneGraph()
+        found = detect_following(pipe.tracks.all(), graph)
+        # Repeat so the edge accumulates past the minimum duration.
+        for _ in range(3):
+            found = detect_following(pipe.tracks.all(), graph)
+        assert graph.get(2, "following", 1) is not None, \
+            "the trailing person should be following the leader"
+
+    def test_graph_is_keyed_by_track_not_entity(self):
+        """Entity ids are regenerated every frame; an entity-keyed graph could
+        never accumulate anything."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for i in range(15):
+            pipe.process(1, [
+                {"class_name": "person", "confidence": .9,
+                 "bbox": [100, 100, 160, 300], "track_id": 1},
+                {"class_name": "car", "confidence": .8,
+                 "bbox": [200, 150, 400, 300], "track_id": 2},
+            ], timestamp=t0 + i * 0.2)
+        edges = pipe.graph.edges_for(1)
+        assert edges, "no relationship accumulated"
+        assert max(e.observation_count for e in edges) > 5, \
+            "edges must accumulate across frames, not reset each frame"
+
+
+class TestCapabilityRegistry:
+    """The scheduler can only reason about capabilities it can describe."""
+
+    def test_gpu_capabilities_unavailable_without_cuda(self):
+        from backend.services.perception import get_registry
+        from backend.services.perception.capabilities import Tier, _cuda_available
+
+        reg = get_registry()
+        if _cuda_available():
+            pytest.skip("host has CUDA; the negative case cannot be checked")
+        for cap in reg.by_tier(Tier.GPU):
+            assert not cap.available
+            assert "CUDA" in cap.unavailable_reason
+
+    def test_availability_is_probed_not_assumed(self):
+        """A package can be declared in requirements and still fail to load."""
+        from backend.services.perception.capabilities import (
+            Capability, CapabilityRegistry, Tier)
+
+        reg = CapabilityRegistry()
+        reg.register(Capability(name="fictional", tier=Tier.CPU, cost_ms=1.0,
+                                module="a_module_that_does_not_exist"))
+        reg.probe()
+        cap = reg.get("fictional")
+        assert cap.available is False
+        assert "ModuleNotFoundError" in cap.unavailable_reason
+
+    def test_plan_skips_capabilities_whose_output_is_already_known(self):
+        from backend.services.perception import get_registry
+
+        reg = get_registry()
+        context = {"person", "vehicle", "detection", "track_id"}
+        fresh = reg.plan(context, already_known=set(), budget_ms=500)
+        assert fresh, "nothing planned at all"
+
+        provided = set()
+        for cap in fresh:
+            provided |= cap.provides
+        repeat = reg.plan(context, already_known=provided, budget_ms=500)
+        assert len(repeat) < len(fresh), \
+            "re-running work whose output is already known is waste"
+
+    def test_plan_respects_the_time_budget(self):
+        from backend.services.perception import get_registry
+
+        reg = get_registry()
+        chosen = reg.plan({"person", "vehicle", "detection", "track_id"},
+                          budget_ms=10.0)
+        assert sum(c.cost_ms for c in chosen) <= 10.0
+
+    def test_plan_excludes_inapplicable_capabilities(self):
+        """Running a plate reader on a frame with no vehicle is pure waste."""
+        from backend.services.perception import get_registry
+
+        reg = get_registry()
+        chosen = reg.plan({"person", "detection", "track_id"}, budget_ms=500)
+        assert "lpr" not in {c.name for c in chosen}
+
+    def test_measured_cost_replaces_the_estimate(self):
+        from backend.services.perception.capabilities import (
+            Capability, CapabilityRegistry, Tier)
+
+        reg = CapabilityRegistry()
+        reg.register(Capability(name="thing", tier=Tier.CPU, cost_ms=100.0))
+        reg.probe()
+        reg.record_cost("thing", 20.0)
+        cap = reg.get("thing")
+        assert cap.measured is True and cap.cost_ms == 20.0
+        reg.record_cost("thing", 30.0)   # smoothed, not replaced outright
+        assert 20.0 < cap.cost_ms < 30.0
+
+
+class TestPerceptionPipelineIntegration:
+    """The pipeline must be safe to run inside the live processing loop."""
+
+    def test_accepts_the_coordinator_detection_shape(self):
+        from backend.services.perception import PerceptionPipeline
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        result = pipe.process(2, [
+            {"class_id": 0, "class_name": "person", "confidence": 0.84,
+             "bbox": [61, 1, 129, 147], "track_id": 3},
+        ])
+        assert len(result.scene.entities) == 1
+        assert result.tracks and result.tracks[0].track_id == 3
+
+    def test_never_raises_on_malformed_input(self):
+        """Perception must never stop a frame reaching the rules engine."""
+        from backend.services.perception import PerceptionPipeline
+
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for bad in ([], None, [{}], [{"bbox": "nonsense"}], ["string"],
+                    [{"class_name": "x", "bbox": [1, 2]}]):
+            result = pipe.process(1, bad)
+            assert result is not None
+
+    def test_measurement_and_inference_stay_separated(self):
+        """A reader must always be able to tell evidence from conclusion."""
+        import time as _t
+        from backend.services.perception import PerceptionPipeline
+
+        t0 = _t.time()
+        pipe = PerceptionPipeline(enable_attributes=False)
+        for i in range(90):
+            pipe.process(1, [{"class_name": "person", "confidence": 0.9,
+                              "bbox": [200, 100, 250, 300], "track_id": 1}],
+                         timestamp=t0 + i * 0.5)
+        summary = pipe.describe_track(1)
+        assert "attributes" in summary and "inferred" in summary
+        for item in summary["inferred"]:
+            assert item["evidence"], "an inference with no evidence is not defensible"
+
+    def test_pipeline_can_be_disabled_by_env(self):
+        """Mirrors ARGUS_NO_SWARM so the legacy path stays benchmarkable."""
+        src = (PROJECT_ROOT / "backend" / "services" / "core_engine"
+               / "processing_coordinator.py").read_text(encoding="utf-8")
+        assert "ARGUS_NO_PERCEPTION" in src
+        assert src.count("self.perception.process(") == 2, \
+            "both the swarm and linear paths must feed perception"

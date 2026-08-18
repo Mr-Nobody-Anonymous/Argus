@@ -60,6 +60,16 @@ class ProcessingCoordinator:
         self.evolutionary_engine = get_evolutionary_engine()
         self.config = get_config()
 
+        # ── Canonical perception layer ──
+        # Scene -> Track -> SceneGraph -> Observation, accumulated across
+        # frames. Opt-out via ARGUS_NO_PERCEPTION=1 so the legacy path can be
+        # benchmarked against it, exactly as ARGUS_NO_SWARM allows for the swarm.
+        from backend.services.perception import get_pipeline as _get_perception
+        self.perception = _get_perception()
+        self.perception_enabled = os.environ.get(
+            "ARGUS_NO_PERCEPTION", "").strip().lower() not in ("1", "true", "yes")
+        self._perception_result = None
+
         # ── Swarm Consortium Components ──
         self.consortium_broker = get_consortium_broker()
         self.yolo_agent = get_yolo_detection_agent()
@@ -270,6 +280,27 @@ class ProcessingCoordinator:
         if detections:
             self.rules_engine.process_detections(camera_id, enhanced_frame, detections)
 
+        # ── Step 3b: Canonical perception (Scene -> Track -> SceneGraph) ──
+        # Runs alongside the legacy path rather than replacing it, so the
+        # migration can be observed on a live camera before anything depends on
+        # it. Cost is ~2 ms; failures are swallowed because perception must
+        # never stop a frame from reaching the rules engine.
+        self._perception_result = None
+        if self.perception_enabled:
+            try:
+                self._perception_result = self.perception.process(
+                    camera_id, detections, frame=enhanced_frame,
+                    timestamp=frame_time,
+                )
+                for obs in self._perception_result.observations:
+                    logger.info(
+                        f"[perception] {obs.kind}: {obs.summary} "
+                        f"(confidence {obs.confidence:.2f}; "
+                        f"evidence: {'; '.join(obs.evidence)})"
+                    )
+            except Exception as e:  # noqa: BLE001 - never break the frame
+                logger.warning(f"Perception pipeline error (non-fatal): {e}")
+
         # ── Step 4: Face Agent (runs if allocation allows) ──
         face_results = []
         face_allocation = self.consortium_broker.get_allocation(self.face_agent.AGENT_ID)
@@ -378,6 +409,24 @@ class ProcessingCoordinator:
         # Step 3: Rules engine
         if detections:
             self.rules_engine.process_detections(camera_id, enhanced_frame, detections)
+
+        # Step 3b: Canonical perception - same as the swarm path, so both modes
+        # accumulate an identical world model and remain comparable.
+        self._perception_result = None
+        if self.perception_enabled:
+            try:
+                self._perception_result = self.perception.process(
+                    camera_id, detections, frame=enhanced_frame,
+                    timestamp=frame_time,
+                )
+                for obs in self._perception_result.observations:
+                    logger.info(
+                        f"[perception] {obs.kind}: {obs.summary} "
+                        f"(confidence {obs.confidence:.2f}; "
+                        f"evidence: {'; '.join(obs.evidence)})"
+                    )
+            except Exception as e:  # noqa: BLE001 - never break the frame
+                logger.warning(f"Perception pipeline error (non-fatal): {e}")
 
         # Step 4: Face recognition
         face_results = []
