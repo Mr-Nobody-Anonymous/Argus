@@ -25,7 +25,9 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${ARGUS_BIND:-127.0.0.1}:8000:8000"
+      # ARGUS_HOST_PORT lets the launcher pick a different host port when 8000
+      # is already taken; the container always listens on 8000 internally.
+      - "${ARGUS_BIND:-127.0.0.1}:${ARGUS_HOST_PORT:-8000}:8000"
 
     environment:
       # Fail fast rather than start with an ephemeral key that silently signs

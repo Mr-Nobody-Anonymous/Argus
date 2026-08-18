@@ -107,6 +107,12 @@ and it is safe to re-run — everything below is skipped once it is already done
 **Prefer not to use a terminal?** Double-click `start.bat` (Windows) or
 `start.command` (macOS/Linux). `stop.bat` / `stop.command` shut it down.
 
+**Prefer `make`?** `make start` and `make stop` wrap the same launcher, and
+`make docker-start` / `make docker-stop` run it in a container (generating the
+required signing key on first use). `make` on its own lists every target. The
+Makefile is a thin wrapper, never a second implementation — Windows has no
+`make`, so the logic stays in `argus.py`.
+
 | Command | What it does |
 |---|---|
 | `python argus.py start` | Set everything up and run it |
@@ -918,6 +924,7 @@ argus/
 ├── Dockerfile                            # Production image (API + built dashboard)
 ├── docker/, docker-compose.yml           # Development container builds
 ├── docker-compose.prod.yml               # Production stack (single image + volume)
+├── Makefile                              # make start / make stop shortcuts
 ├── render.yaml, fly.toml, railway.json   # One-click platform blueprints
 ├── vercel.json                           # Static dashboard only - see docs/DEPLOYMENT.md
 ├── infrastructure/, mediamtx/, mosquitto/

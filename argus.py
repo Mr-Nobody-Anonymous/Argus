@@ -46,7 +46,13 @@ DEFAULT_PORT = 8000
 MIN_PYTHON = (3, 9)
 IS_WINDOWS = os.name == "nt"
 
-COMPOSE_FILE = ROOT / "docker-compose.yml"
+# Docker mode runs the production compose file: one container that serves the
+# API *and* the built dashboard. docker-compose.yml is the development stack -
+# its backend image contains no frontend/dist, so `start` would announce a
+# dashboard URL that answers {"dashboard": "not built"}, and it additionally
+# boots Kafka and Qdrant that nothing in the default pipeline uses.
+COMPOSE_FILE = ROOT / "docker-compose.prod.yml"
+DEV_COMPOSE_FILE = ROOT / "docker-compose.yml"
 REQUIREMENTS = ROOT / "requirements.txt"
 FRONTEND = ROOT / "frontend"
 FRONTEND_DIST = FRONTEND / "dist"
@@ -484,10 +490,20 @@ def pid_alive(pid: int) -> bool:
 
 def start_docker(compose, port: int, args) -> int:
     step("Starting with Docker")
+
+    # The production compose file reads these from the environment. ensure_env_file()
+    # has already written a real secret to .env; pass it through explicitly so the
+    # compose interpolation cannot fall back to its `:?` error and abort with a
+    # message about a variable the user never typed.
+    env = os.environ.copy()
+    env.update(load_env_file())
+    env["ARGUS_BIND"] = "0.0.0.0" if args.host == "0.0.0.0" else "127.0.0.1"
+    env["ARGUS_HOST_PORT"] = str(port)
+
     cmd = compose + ["-f", str(COMPOSE_FILE), "up", "-d"]
     if args.rebuild:
         cmd.append("--build")
-    p = run(cmd)
+    p = run(cmd, env=env)
     if p.returncode != 0:
         die("docker compose failed to start",
             "Run 'python argus.py start --native' to use a local virtualenv instead.")
@@ -675,12 +691,27 @@ def cmd_stop(args) -> int:
     if mode == "docker" or (mode is None and COMPOSE_FILE.is_file()):
         compose = docker_compose_cmd()
         if compose and mode == "docker":
-            p = run(compose + ["-f", str(COMPOSE_FILE), "down"], capture=True)
-            if p.returncode == 0:
+            # Bring down both compose files. `stop` must mean "nothing is left
+            # running", and an earlier version of this launcher (or a user
+            # following the old README) may have started the development stack,
+            # whose containers would otherwise keep holding the port and leave
+            # `start` reporting a healthy server this launcher does not manage.
+            env = os.environ.copy()
+            env.update(load_env_file())
+            env.setdefault("ARGUS_JWT_SECRET", "unused-for-compose-down")
+
+            any_ok = False
+            for cf in (COMPOSE_FILE, DEV_COMPOSE_FILE):
+                if not cf.is_file():
+                    continue
+                p = run(compose + ["-f", str(cf), "down"], capture=True, env=env)
+                if p.returncode == 0:
+                    any_ok = True
+                elif cf is COMPOSE_FILE:
+                    warn("docker compose down reported a problem")
+            if any_ok:
                 ok("Containers stopped")
                 stopped = True
-            else:
-                warn("docker compose down reported a problem")
 
     if stop_native(quiet=True):
         ok("Backend stopped")

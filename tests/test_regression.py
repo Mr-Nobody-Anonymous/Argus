@@ -4067,3 +4067,93 @@ class TestDeploymentPortability:
 
         fly = tomllib.loads((self.ROOT / "fly.toml").read_text(encoding="utf-8"))
         assert fly["mounts"][0]["destination"] == fly["env"]["ARGUS_DATA_DIR"]
+
+
+class TestOneCommandCoversDockerToo:
+    """`start` and `stop` must mean the same thing in every runtime.
+
+    The launcher picks Docker automatically when the daemon is responding, so a
+    Docker user and a native user run the identical command and must get the
+    identical result: a working dashboard, and nothing left running afterwards.
+    """
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_docker_mode_starts_the_image_that_contains_the_dashboard(self):
+        """The regression this guards: the launcher pointed Docker mode at
+        docker-compose.yml, whose backend image copies only backend/ and
+        config/ - no frontend/dist. `start` then printed
+        "Dashboard http://localhost:8000" while that URL returned
+        {"dashboard": "not built"}. The production compose serves both.
+        """
+        src = (self.ROOT / "argus.py").read_text(encoding="utf-8")
+        assert 'COMPOSE_FILE = ROOT / "docker-compose.prod.yml"' in src, (
+            "docker mode must use the production compose file, whose image "
+            "contains the built dashboard"
+        )
+
+    def test_the_compose_image_actually_builds_the_dashboard(self):
+        """Asserting the filename is not enough - the image it builds must
+        genuinely contain the UI, or the fix above is cosmetic."""
+        compose = yaml.safe_load(
+            (self.ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+        )
+        dockerfile = compose["services"]["argus"]["build"]["dockerfile"]
+        text = (self.ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "npm run build" in text
+        assert "/ui/dist ./frontend/dist" in text, (
+            "the runtime stage must copy the built UI into the image"
+        )
+
+    def test_stop_tears_down_both_compose_files(self):
+        """`stop` must mean nothing is left running. A user who previously ran
+        the development stack would otherwise keep containers holding the port,
+        and the next `start` reports a healthy server it does not manage."""
+        src = (self.ROOT / "argus.py").read_text(encoding="utf-8")
+        stop_fn = src[src.index("def cmd_stop") : src.index("def cmd_status")]
+        assert "DEV_COMPOSE_FILE" in stop_fn, (
+            "stop must also bring down the development compose stack"
+        )
+
+    def test_docker_start_passes_the_required_secret_through(self):
+        """docker-compose.prod.yml guards ARGUS_JWT_SECRET with `:?`, which
+        aborts the whole command when unset. The launcher writes a real secret
+        to .env, so it must pass that environment to compose or the one-command
+        path dies on a variable the user was never asked to set."""
+        src = (self.ROOT / "argus.py").read_text(encoding="utf-8")
+        fn = src[src.index("def start_docker") : src.index("def start_native")]
+        assert "load_env_file()" in fn
+        assert "env=env" in fn, "compose must receive the loaded environment"
+
+    def test_host_port_is_configurable_so_a_busy_port_is_survivable(self):
+        """The launcher falls back to the next free port when 8000 is taken. A
+        hardcoded host port in compose would bind 8000 anyway and fail."""
+        compose_text = (self.ROOT / "docker-compose.prod.yml").read_text(
+            encoding="utf-8"
+        )
+        assert "${ARGUS_HOST_PORT:-8000}:8000" in compose_text
+        src = (self.ROOT / "argus.py").read_text(encoding="utf-8")
+        assert 'env["ARGUS_HOST_PORT"]' in src
+
+    def test_makefile_targets_delegate_to_the_real_launcher(self):
+        """make is a convenience, not a second implementation. Windows users
+        have no make, so the logic must live in argus.py and the targets must
+        stay thin - two divergent code paths is how one of them rots."""
+        mk = (self.ROOT / "Makefile").read_text(encoding="utf-8")
+        for target in ("start:", "stop:"):
+            body = mk[mk.index(target) + len(target) :].split("\n\n")[0]
+            assert "argus.py" in body, f"`make {target[:-1]}` must call argus.py"
+
+    def test_makefile_generates_a_valid_secret_for_docker(self):
+        """`docker compose up` fails outright without ARGUS_JWT_SECRET. The
+        .env target must produce a key that satisfies the >=32 char rule, or
+        the one-command Docker path stops at an error message."""
+        mk = (self.ROOT / "Makefile").read_text(encoding="utf-8")
+        assert ".env:" in mk
+        env_target = mk[mk.index(".env:") :].split("\n\n")[0]
+        assert "token_urlsafe(48)" in env_target, (
+            "must generate a key comfortably over the 32-character minimum"
+        )
+        assert "docker-start: .env" in mk, (
+            "the docker target must depend on .env so the key exists first"
+        )

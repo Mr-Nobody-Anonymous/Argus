@@ -28,6 +28,7 @@ recommendation below follows from that.
 
 | Target | Hosts | Command |
 |---|---|---|
+| [Local machine](#0-just-run-it-locally) | Everything | `python argus.py start` / `stop` |
 | [Docker (any machine)](#1-any-machine-with-docker) | Everything | `docker compose -f docker-compose.prod.yml up -d` |
 | [Render](#2-render) | Everything | Blueprint from `render.yaml` |
 | [Railway](#3-railway) | Everything | Detects `railway.json` |
@@ -55,6 +56,24 @@ Every target uses the same environment variables.
 > that is not `ARGUS_DATA_DIR`. The app then writes to the container filesystem
 > while an empty disk sits beside it, and everything looks fine until the first
 > restart. The provided `render.yaml` and `fly.toml` already match.
+
+---
+
+## 0. Just run it locally
+
+Not deploying to a server, only running Argus on a machine in front of you?
+Skip this guide:
+
+```bash
+python argus.py start     # sets up everything and runs it
+python argus.py stop      # stops everything
+```
+
+or `make start` / `make stop`, or double-click `start.command` / `start.bat`.
+The launcher creates the virtualenv, installs dependencies, seeds the database,
+builds the dashboard and waits for health — and picks Docker automatically if
+the daemon is running. The rest of this guide is for hosting Argus somewhere
+nobody is logged in.
 
 ---
 
