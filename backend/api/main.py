@@ -1926,6 +1926,212 @@ async def cityos_bind_camera(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/cityos/map/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_map(camera_id: int):
+    """Lane-level intersection geometry + calibration for a camera."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        return {
+            "intersection_id": iid,
+            "calibration": inter.calibration.to_dict(),
+            "map": inter.map.to_dict(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS map failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/cityos/map/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def cityos_set_map(camera_id: int, payload: dict = Body(...)):
+    """Configure calibration and/or lane geometry for an intersection.
+
+    Body keys (all optional): calibration {view_width_m, view_height_m,
+    yaw_deg, centre}, stop_lines {approach: coord}, bike_lanes bool.
+    """
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        cal = payload.get("calibration")
+        if cal:
+            engine.set_calibration(camera_id, cal)
+        map_cfg = {k: v for k, v in payload.items()
+                   if k in ("stop_lines", "bike_lanes", "crosswalks")}
+        if map_cfg or cal:
+            # Rebuild the map so stop-line changes take effect.
+            current = {}
+            with engine._lock:
+                iid = engine.camera_to_intersection.get(camera_id)
+            if iid:
+                inter = engine.get_intersection(iid)
+                current["crosswalks"] = inter.map.crosswalks
+                current.update(map_cfg)
+                engine.set_map(camera_id, current)
+        return await cityos_map(camera_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS set map failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/queue/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_queue(camera_id: int):
+    """Queue depth/length/growth per approach."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        return {"intersection_id": iid,
+                "queues": inter.flow.queue_status()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS queue failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/pedestrian/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_pedestrian(camera_id: int):
+    """Pedestrian signal phases and waiting-pedestrian estimate."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        users = inter.perception.active_users()
+        waiting = [u for u in users
+                   if u["category"] == "pedestrian"
+                   and not u.get("in_crosswalk")
+                   and abs(u.get("distance_to_stop_line_m") or 999) < 15.0]
+        return {
+            "intersection_id": iid,
+            "ped_signal": inter.signal.ped_states(),
+            "waiting_pedestrians": len(waiting),
+            "waiting_objects": [
+                {"track_id": u["track_id"],
+                 "position": u["position"],
+                 "approach": u.get("approach")} for u in waiting[:20]
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS pedestrian failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/corridors", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_corridors():
+    """Corridor links, pending handoffs and travel-time statistics."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        return get_cityos_engine().corridor.summary()
+    except Exception as e:
+        logger.error(f"CityOS corridors failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cityos/corridors", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def cityos_add_corridor(payload: dict = Body(...)):
+    """Define a corridor link between two intersections.
+
+    Body: link_id, from_intersection, to_intersection, exit_approach,
+    entry_approach, min_travel_s, max_travel_s.
+    """
+    required = ("link_id", "from_intersection", "to_intersection",
+                "exit_approach", "entry_approach")
+    missing = [k for k in required if not payload.get(k)]
+    if missing:
+        raise HTTPException(status_code=400,
+                            detail=f"missing fields: {missing}")
+    try:
+        from backend.services.cityos import get_cityos_engine
+        from backend.services.cityos.corridor import CorridorLink
+        link = CorridorLink(
+            link_id=str(payload["link_id"]),
+            from_iid=str(payload["from_intersection"]),
+            to_iid=str(payload["to_intersection"]),
+            exit_approach=str(payload["exit_approach"]),
+            entry_approach=str(payload["entry_approach"]),
+            min_travel_s=float(payload.get("min_travel_s", 20)),
+            max_travel_s=float(payload.get("max_travel_s", 300)),
+        )
+        get_cityos_engine().add_corridor_link(link)
+        return {"added": True, "link": link.to_dict()}
+    except Exception as e:
+        logger.error(f"CityOS add corridor failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/replay/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_replay(camera_id: int, seconds_ago: float = Query(30, ge=0, le=1800)):
+    """Deterministic replay: the recorded twin snapshot nearest `seconds_ago`."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        snap = engine.get_intersection(iid).replay_at(seconds_ago)
+        if snap is None:
+            return {"available": False,
+                    "note": "no snapshots recorded yet; they accumulate every 5 s"}
+        return {"available": True, **snap}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS replay failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/health/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_sensor_health(camera_id: int):
+    """Deep sensor-health diagnostics for one intersection's sensor."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        return {"intersection_id": iid,
+                "sensor_health": engine.get_intersection(iid).sensor_health()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS sensor health failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Single-port web UI ====================
 # Serving the built React app from FastAPI means `argus start` exposes ONE url
 # (http://localhost:8000) with no Node runtime, no second port and no proxy.

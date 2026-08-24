@@ -17,6 +17,9 @@ from typing import Dict, List
 
 BUCKET_SECONDS = 60
 MAX_BUCKETS = 120          # two hours of per-minute history
+QUEUE_SPEED_MPS = 1.0      # below this a vehicle counts as queued
+QUEUE_MAX_DIST_M = 100.0   # only count queues within this range of the line
+QUEUE_HISTORY_S = 120      # growth-rate window
 
 
 class TrafficFlowAnalyzer:
@@ -31,6 +34,10 @@ class TrafficFlowAnalyzer:
         self.speed_samples: Dict[str, deque] = defaultdict(
             lambda: deque(maxlen=500))
         self.peak_occupancy = 0
+        # Queue analytics: approach -> deque[(ts, length_m)]
+        self.queue_history: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=240))
+        self.last_queue: Dict[str, Dict] = {}
 
     # ── Ingest ──────────────────────────────────────────────────────────
 
@@ -106,6 +113,53 @@ class TrafficFlowAnalyzer:
                     "samples": len(vals),
                 }
             return out
+
+    # ── Queue detection & estimation ────────────────────────────────────
+
+    def observe_queue(self, users: List[Dict]) -> Dict[str, Dict]:
+        """Estimate queue depth/length/growth per approach.
+
+        A vehicle is queued when it is nearly stopped and upstream of its
+        stop line. Queue LENGTH is the distance from the stop line to the
+        furthest queued vehicle - what an adaptive controller actually wants.
+        """
+        now = time.time()
+        snapshot: Dict[str, Dict] = {}
+        for u in users:
+            if u.get("is_vru"):
+                continue
+            dist = u.get("distance_to_stop_line_m")
+            if dist is None or not (0 < dist <= QUEUE_MAX_DIST_M):
+                continue
+            if u.get("speed_mps", 99) > QUEUE_SPEED_MPS:
+                continue
+            approach = u.get("approach") or "unknown"
+            q = snapshot.setdefault(approach, {"count": 0, "length_m": 0.0})
+            q["count"] += 1
+            q["length_m"] = max(q["length_m"], dist)
+
+        with self._lock:
+            for approach, q in snapshot.items():
+                hist = self.queue_history[approach]
+                hist.append((now, q["length_m"]))
+                # Growth rate vs the oldest sample inside the window.
+                cutoff = now - QUEUE_HISTORY_S
+                older = [l for t, l in hist if t >= cutoff]
+                if len(older) >= 2 and hist[0][0] < now - 10:
+                    dt = max(now - hist[0][0], 1.0)
+                    q["growth_mpm"] = round(
+                        (q["length_m"] - older[0]) / dt * 60.0, 2)
+                else:
+                    q["growth_mpm"] = 0.0
+                q["stopped_count"] = q.pop("count")
+            self.last_queue = {
+                k: dict(v) for k, v in snapshot.items()
+            }
+        return {k: dict(v) for k, v in snapshot.items()}
+
+    def queue_status(self) -> Dict[str, Dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self.last_queue.items()}
 
     def demand_by_approach(self, users: List[Dict]) -> Dict[str, float]:
         """Live vehicle demand per approach, used by the signal optimiser.

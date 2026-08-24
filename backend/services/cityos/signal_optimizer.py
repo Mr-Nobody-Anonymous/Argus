@@ -25,7 +25,13 @@ MAX_GREEN_S = 45.0
 YELLOW_S = 3.0
 ALL_RED_S = 1.5
 
+# Pedestrian clearance runs through yellow + all-red of the parallel phase.
+PED_CLEARANCE_S = YELLOW_S + ALL_RED_S + 4.0
+
 MODES = ("fixed", "adaptive", "manual")
+
+# Approach -> its signal axis.
+APPROACH_AXIS = {"north": "NS", "south": "NS", "east": "EW", "west": "EW"}
 
 
 class SignalOptimizer:
@@ -110,6 +116,36 @@ class SignalOptimizer:
                 "all_red_s": ALL_RED_S,
                 "recommendations_applied": self.recommendations_applied,
             }
+
+    # ── Per-approach & pedestrian signal intelligence ───────────────────
+
+    def approach_state(self, approach: str) -> str:
+        """green / yellow / red for one approach, derived from the phase."""
+        axis = APPROACH_AXIS.get(approach)
+        if axis is None:
+            return "red"
+        with self._lock:
+            if self.phase != axis:
+                return "red"
+            return {"green": "green", "yellow": "yellow"}.get(
+                self.state, "red")
+
+    def ped_states(self) -> Dict[str, str]:
+        """Pedestrian signal per phase: walk / flashing / dont_walk.
+
+        Walk during the parallel vehicle green; flashing don't-walk through
+        yellow + all-red (the clearance interval); solid don't-walk otherwise.
+        """
+        with self._lock:
+            out = {}
+            for ph in PHASES:
+                if ph == self.phase and self.state == "green":
+                    out[ph] = "walk"
+                elif ph == self.phase and self.state in ("yellow", "all_red"):
+                    out[ph] = "flashing"
+                else:
+                    out[ph] = "dont_walk"
+            return out
 
     # ── Adaptive recommendation ─────────────────────────────────────────
 

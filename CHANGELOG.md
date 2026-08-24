@@ -5,6 +5,52 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## CityOS — intersection intelligence layer
+
+A geometry-only traffic-intelligence layer inspired by Aeva CityOS, built on
+the existing detection pipeline. It consumes ONLY detection geometry (track
+ids, classes, boxes, speeds) — no face embeddings, plate text or imagery enter
+it, so the intersection model it builds is privacy-preserving by construction.
+
+- `backend/services/cityos/` (new package):
+  - **Digital Perception Engine** (`perception_engine.py`) — road-user objects
+    with stable ids, category classification (vehicle/truck/bus/motorcycle/
+    cyclist/pedestrian), normalised position, velocity, compass heading and
+    bounded trajectory history; stale objects retire into completed trips.
+  - **Safety analytics** (`safety_analytics.py`) — wrong-way detection against
+    learned dominant flow per approach (or configured legal headings),
+    near-miss detection via time-to-collision between converging vehicles,
+    and VRU conflict detection (vehicle vs pedestrian/cyclist). All events
+    deduplicated with cooldowns.
+  - **Traffic flow** (`traffic_flow.py`) — per-minute volume buckets by
+    category, turning-movement matrix from completed trips, average/85th-
+    percentile speeds, live demand-per-approach.
+  - **Signal optimiser** (`signal_optimizer.py`) — NS/EW phase machine with
+    FIXED / ADAPTIVE / MANUAL modes, demand-proportional green recommendations,
+    operator force-phase override, audit-logged command log. It recommends; it
+    never actuates a real controller.
+  - **Engine** (`engine.py`) — per-intersection orchestration, camera→
+    intersection registry (scales 1 → N intersections), digital-twin snapshot
+    and merged alert feed.
+- Wired into `ProcessingCoordinator._store_analysis()` so every processed frame
+  feeds it in both swarm and linear modes; disable with `ARGUS_NO_CITYOS=1`.
+  Failures are swallowed — CityOS must never break a frame.
+- 9 new role-guarded endpoints under `/api/v1/cityos/*` (status, twin, alerts,
+  flow, signal status/mode/phase, bind).
+- New **CityOS dashboard page** (`/cityos`, Traffic icon in the nav): live
+  digital-twin canvas (top-down intersection, colour-coded road users,
+  trajectory trails, velocity vectors, signal-state indicator), category/VRU
+  counters, safety stat cards, alert feed, traffic-volume chart, turning
+  movements, and a signal panel with adaptive recommendation + manual override.
+- `tests/test_cityos.py`: 15 tests covering every analyser; found and fixed a
+  real deadlock in `SignalOptimizer.tick()` during development.
+
+### Also fixed in this change
+- Unresolved git merge-conflict markers in `backend/api/stream_ws.py` that made
+  the entire application unimportable.
+- `tests/test_regression.py` failed to import on Python 3.10 (`tomllib`);
+  added the standard `tomli` fallback.
+
 ## Alert delivery and video evidence — events that leave the database
 
 ### Every alert Argus produced was delivered nowhere

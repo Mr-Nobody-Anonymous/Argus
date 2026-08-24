@@ -274,6 +274,25 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 
 ---
 
+#### `backend/services/cityos/` — Intersection Intelligence (CityOS)
+
+A geometry-only traffic-intelligence layer inspired by Aeva CityOS, built on
+top of the existing detection pipeline. It consumes ONLY detection geometry
+(track ids, classes, boxes, speeds) — no face embeddings, plate text or imagery
+ever enter this layer. Wired into `ProcessingCoordinator._store_analysis()` so
+every processed frame feeds it in both swarm and linear modes; disable with
+`ARGUS_NO_CITYOS=1`. Failures are swallowed — CityOS must never break a frame.
+
+| # | File | Description |
+|---|------|-------------|
+| 1 | `perception_engine.py` | **Digital Perception Engine.** Converts per-frame detections into road-user objects: stable track id, category (vehicle/truck/bus/motorcycle/cyclist/pedestrian), normalised position, velocity (m/s + km/h from the speed analyser), compass heading, bounded trajectory history. Stale objects retire into completed trips recording entry/exit approach. |
+| 2 | `safety_analytics.py` | **Vision-Zero safety analytics.** Wrong-way detection (learns dominant flow per approach or uses configured legal headings; streak-confirmed), near-miss detection via time-to-collision between converging vehicles, VRU conflict detection (vehicle vs pedestrian/cyclist proximity + TTC). All events deduplicated with cooldowns. |
+| 3 | `traffic_flow.py` | **Traffic-flow analytics.** Per-minute volume buckets by category, turning-movement matrix (entry→exit approach), average/85th-percentile speeds, live demand-per-approach for the signal optimiser. Bounded memory. |
+| 4 | `signal_optimizer.py` | **Signal optimiser** (NTCIP-style interface). NS/EW phase machine (green→yellow→all-red) with FIXED / ADAPTIVE / MANUAL modes, demand-proportional green recommendations, operator force-phase override, audit-logged command log. It recommends; it never actuates a real controller. |
+| 5 | `engine.py` | **Orchestrator + digital twin.** Per-intersection stack (perception → safety → flow → signal), camera→intersection registry (`bind_camera` scales 1 → N intersections), `digital_twin()` snapshot (objects, counts, signal state, flow metrics, safety events, edge-node health), merged alert feed. |
+
+API endpoints: `/api/v1/cityos/{status,twin,twin/{camera_id},alerts,flow/{camera_id},signal/{camera_id},signal/{camera_id}/mode,signal/{camera_id}/phase,bind}` — all role-guarded.
+
 #### `backend/services/vision/` — Vision AI Services
 
 | # | File | Description |
@@ -416,6 +435,7 @@ Typed endpoint exports:
 | `AnalyticsDashboard.jsx` | Charts and trends — event counts over time, detection class distribution, FPS timeline, heatmap |
 | `AdaptiveLearningDashboard.jsx` | AI evolution metrics — fitness over generations, gene vector history, agent status |
 | `MemoryExplorer.jsx` | Search stored observations with their evidence; surfaces any rule that cannot fire on this host |
+| `CityOSDashboard.jsx` | **Intersection intelligence** (`/cityos`) — live digital-twin canvas (top-down intersection, colour-coded road users, trajectory trails, velocity vectors, signal-state indicator), category/VRU counters, wrong-way / near-miss / VRU stat cards, severity-coloured alert feed, traffic-volume chart, turning movements, signal panel with adaptive recommendation and manual override. Polls the twin at 1 Hz. |
 
 ### `frontend/public/` — Static Assets
 
@@ -502,6 +522,7 @@ Typed endpoint exports:
 |------|-------------|
 | `test_regression.py` | **23 pipeline-correctness tests.** Kalman state shape and transition-matrix behaviour, greedy IoU matching, track identity at realistic (subsampled) frame rates, primary-detector starvation under contention, skipped-frame semantics, and event deduplication. **Mutation-verified**: reintroducing a real bug makes the relevant test fail with a readable diagnostic. |
 | `test_api_security.py` | **21 auth/RBAC/secret tests.** Includes a static sweep over the live route table asserting every `/api` route outside the public allowlist carries an auth dependency — so a new endpoint cannot silently ship unauthenticated. Also covers forged, expired, and foreign-key-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, and plaintext secrets in `config.yaml`. |
+| `test_cityos.py` | **15 CityOS tests.** Perception ingest/classification/trajectory, stale-user retirement on the frame clock, wrong-way detection against learned dominant flow (and non-firing for conforming flow), near-miss TTC between converging vehicles, VRU conflicts, flow volume/turning matrix/demand weighting, signal phase machine (deterministic via backdated timers), recommendation logic, manual-mode override semantics, engine camera binding and twin construction. Found a real deadlock in `SignalOptimizer.tick()` during development. |
 | `swarm_benchmark.py` | **Swarm vs linear A/B harness.** Runs each variant in a **separate process** (module-level singletons carry mutable state and biased the first in-process attempt badly enough to invert its conclusion). CLI: `--clip`, `--frames`, `--json`, `--camera-id`. Reports FPS, p50/p95 latency, detections/frame, and zero-detection frames — throughput and quality side by side, deliberately. |
 
 > ⚠️ The older scripts above predate authentication and issue unauthenticated
