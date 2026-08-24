@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import {
     Videocam, Event, Analytics, Psychology, Search, Radar, Logout,
-    Menu as MenuIcon, ShieldOutlined, ExpandMore,
+    Menu as MenuIcon, ShieldOutlined, ExpandMore, Traffic,
 } from '@mui/icons-material';
 
 import Login from './pages/Login';
@@ -19,6 +19,7 @@ import EventFeed from './pages/EventFeed';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
 import AdaptiveLearningDashboard from './pages/AdaptiveLearningDashboard';
 import MemoryExplorer from './pages/MemoryExplorer';
+import CityOSDashboard from './pages/CityOSDashboard';
 import { authAPI, systemAPI } from './services/api';
 import theme, { C, MONO } from './theme';
 import { StatusDot } from './components/ui';
@@ -27,6 +28,7 @@ const RAIL = 232;
 
 const NAV = [
     { to: '/', icon: <Radar />, label: 'Command', hint: 'Live video wall and alert feed' },
+    { to: '/cityos', icon: <Traffic />, label: 'CityOS', hint: 'Intersection digital twin and traffic intelligence' },
     { to: '/cameras', icon: <Videocam />, label: 'Cameras', hint: 'Register and configure feeds' },
     { to: '/events', icon: <Event />, label: 'Events', hint: 'Event history and triage' },
     { to: '/analytics', icon: <Analytics />, label: 'Analytics', hint: 'Trends and distributions' },
@@ -294,6 +296,7 @@ function Shell({ user, onLogout }) {
                 <Box component="main" sx={{ p: { xs: 2, md: 3 } }}>
                     <Routes>
                         <Route path="/" element={<CommandCenter />} />
+                        <Route path="/cityos" element={<CityOSDashboard />} />
                         <Route path="/cameras" element={<CameraManagement />} />
                         <Route path="/events" element={<EventFeed />} />
                         <Route path="/analytics" element={<AnalyticsDashboard />} />

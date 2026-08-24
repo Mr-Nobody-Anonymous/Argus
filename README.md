@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/main/images.png" alt="Argus - The Watchful Guardian" width="400">
+<img src="https://raw.githubusercontent.com/Mr-Nobody-Anonymous/Argus/images.png" alt="Argus - The Watchful Guardian" width="400">
 </div>
 
 <h1 align="center">
@@ -398,52 +398,52 @@ python tests/swarm_benchmark.py --frames 40 --json docs/swarm_benchmark_results.
 
 ```
 ┌──────────────┐     ┌─────────────────┐     ┌──────────────────────────────┐
-│  RTSP Camera │────▶│ stream_ingestion │────▶│   ProcessingCoordinator      │
-│  / Webcam    │     │ (cv2.VideoCapture│     │  (swarm OR fallback loop)    │
-└──────────────┘     │  + frame queue)  │     │                              │
+│  RTSP Camera │───▶│ stream_ingestion │───▶│   ProcessingCoordinator      │
+│  / Webcam    │     │ (cv2.VideoCapture│    │  (swarm OR fallback loop)    │
+└──────────────┘     │  + frame queue)  │    │                              │
                      └─────────────────┘     │  ┌────────────────────────┐  │
-                                             │  │  YOLO Agent (primary) │  │
+                                             │  │  YOLO Agent (primary)  │  │
                                              │  │  → detections [dict]   │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  DeepTracker            │  │
-                                             │  │  → Kalman filter        │  │
-                                             │  │  → persistent track IDs │  │
+                                             │  │  DeepTracker           │  │
+                                             │  │  → Kalman filter       │  │
+                                             │  │  → persistent track IDs│  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  LogicMutator           │  │
-                                             │  │  → sandboxed rule filter│  │
+                                             │  │  LogicMutator          │  │
+                                             │  │  →sandboxed rule filter│  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  Consortium Broker      │  │
-                                             │  │  → post context         │  │
-                                             │  │  → resolve agent bids   │  │
+                                             │  │  Consortium Broker     │  │
+                                             │  │  → post context        │  │
+                                             │  │  → resolve agent bids  │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  Face Agent (cond.)     │  │
-                                             │  │  LPR Agent (cond.)      │  │
+                                             │  │  Face Agent (cond.)    │  │
+                                             │  │  LPR Agent (cond.)     │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  PoseEstimator          │  │
-                                             │  │  AnomalyDetector        │  │
-                                             │  │  SpeedHeightAnalyzer    │  │
+                                             │  │  PoseEstimator         │  │
+                                             │  │  AnomalyDetector       │  │
+                                             │  │  SpeedHeightAnalyzer   │  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
-                                             │  │  RulesEngine             │  │
-                                             │  │  → zone checks           │  │
-                                             │  │  → event generation      │  │
+                                             │  │  RulesEngine           │  │
+                                             │  │  → zone checks         │  │
+                                             │  │  → event generation    │  │
                                              │  └───────────┬────────────┘  │
                                              └──────────────┼───────────────┘
                                                             ▼
                            ┌─────────────────────────────────────────────┐
                            │         camera_analysis cache               │
-                           │  (detections, face, lpr, pose, anomalies)    │
+                           │  (detections, face, lpr, pose, anomalies)   │
                            └──────────┬──────────────────────┬───────────┘
                                       ▼                      ▼
                            ┌──────────────────┐   ┌──────────────────────┐
@@ -452,10 +452,10 @@ python tests/swarm_benchmark.py --frames 40 --json docs/swarm_benchmark_results.
                            └──────────────────┘   └──────────┬───────────┘
                                                              ▼
                                                   ┌──────────────────────┐
-                                                  │  LiveVideoPlayer.jsx  │
-                                                  │  → canvas overlays    │
+                                                  │  LiveVideoPlayer.jsx │
+                                                  │  → canvas overlays   │
                                                   │  → bboxes + labels   │
-                                                  │  → zone polygons      │
+                                                  │  → zone polygons     │
                                                   └──────────────────────┘
 ```
 
@@ -525,19 +525,36 @@ on port 8000), or `npm run dev` in `frontend/` for hot reload on port 3000.
 
 ## 📊 API Reference
 
-**72 addressable operations**: 68 registered routes (62 under `/api/v1`, plus
+**80 addressable operations**: 80 registered routes (71 under `/api/v1`, plus
 `GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
 `/metrics`), 3 streaming routes and 1 WebSocket route. `GET /` is excluded: it
 serves the dashboard when `frontend/dist` exists and a build hint when it does
 not, so it is not part of the API surface.
 
-Of the 62 `/api/v1` operations, **59 require a token and 3 are public**.
+Of the 71 `/api/v1` operations, **68 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 
 The **Role** column is the *minimum* role required.
 
 Interactive docs: http://localhost:8000/docs
+
+### CityOS Intersection Intelligence
+Geometry-only traffic layer (no biometrics enter it): digital twin,
+road-user classification and trajectories, wrong-way / near-miss / VRU
+safety analytics, traffic-flow statistics and signal-optimiser control.
+
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/cityos/status` | viewer | Intersections overview + privacy posture |
+| `GET` | `/api/v1/cityos/twin` | viewer | Digital-twin snapshots for all intersections |
+| `GET` | `/api/v1/cityos/twin/{camera_id}` | viewer | Digital twin for one camera's intersection |
+| `GET` | `/api/v1/cityos/alerts` | viewer | Merged safety alert feed (`kind` filter) |
+| `GET` | `/api/v1/cityos/flow/{camera_id}` | viewer | Volume series, turning matrix, speed summary |
+| `GET` | `/api/v1/cityos/signal/{camera_id}` | viewer | Signal phase state + adaptive recommendation |
+| `POST` | `/api/v1/cityos/signal/{camera_id}/mode` | operator | Set mode: fixed / adaptive / manual |
+| `POST` | `/api/v1/cityos/signal/{camera_id}/phase` | operator | Manual override: force NS or EW green |
+| `POST` | `/api/v1/cityos/bind` | admin | Bind a camera to a named intersection |
 
 ### Authentication
 | Method | Path | Role | Description |

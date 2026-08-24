@@ -5,7 +5,10 @@ Run the Django admin server alongside the FastAPI backend.
 Usage:
     python backend/scripts/run_admin.py            # serves on :8001
     python backend/scripts/run_admin.py 0.0.0.0:8002
+<<<<<<< HEAD
     python backend/scripts/run_admin.py --setup-only   # create tables + admin, then exit
+=======
+>>>>>>> 315e6e460c503a1d78d8fc1438af2a03582c7e69
 
 Then open http://localhost:8001/admin/ and sign in with admin / admin123
 (created automatically on first run).
@@ -56,6 +59,7 @@ def main():
     ensure_schema()
     ensure_admin_user()
 
+<<<<<<< HEAD
     # --setup-only exists for CI and first-time setup: the auth tables live in
     # Django's migrations, and without them the security suite skips almost
     # every test. Creating them must not require starting a blocking server.
@@ -65,6 +69,9 @@ def main():
 
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     addrport = args[0] if args else '8001'
+=======
+    addrport = sys.argv[1] if len(sys.argv) > 1 else '8001'
+>>>>>>> 315e6e460c503a1d78d8fc1438af2a03582c7e69
     print(f"\nStarting Django admin on {addrport} -> http://localhost:8001/admin/\n")
 
     # --noreload keeps the auto-created superuser logic from running twice.

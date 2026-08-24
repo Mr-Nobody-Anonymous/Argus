@@ -127,6 +127,20 @@ class ProcessingCoordinator:
         self.camera_analysis: Dict[int, Dict] = {}
         self.analysis_lock = threading.Lock()
 
+        # ── CityOS intersection intelligence ──
+        # Geometry-only traffic layer (classification, trajectories, wrong-way,
+        # near-miss, VRU, flow, signal recommendations, digital twin).
+        # Opt-out via ARGUS_NO_CITYOS=1; failures must never break a frame.
+        self.cityos_enabled = os.environ.get(
+            "ARGUS_NO_CITYOS", "").strip().lower() not in ("1", "true", "yes")
+        if self.cityos_enabled:
+            try:
+                from backend.services.cityos import get_cityos_engine
+                self.cityos = get_cityos_engine()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"CityOS engine unavailable: {exc}")
+                self.cityos_enabled = False
+
         # Previous frame for motion anomaly detection
         self.prev_frames: Dict[int, np.ndarray] = {}
 
@@ -637,6 +651,15 @@ class ProcessingCoordinator:
                 'analysis_results': analysis_results,
                 'image_quality': self.image_enhancement.detect_quality_issues(original_frame),
             }
+
+        # Feed the CityOS intersection model (geometry only - no imagery or
+        # biometrics leave this dict). Runs after the cache write so a slow
+        # CityOS tick can never delay the video path.
+        if self.cityos_enabled:
+            try:
+                self.cityos.ingest(camera_id, detections, analysis_results, frame_time)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"CityOS ingest failed for camera {camera_id}: {exc}")
 
     def _record_evolutionary_metrics(
         self, camera_id: int, frame_time: float,

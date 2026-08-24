@@ -56,11 +56,18 @@ export default function LiveVideoPlayer({ cameraId, detections: propDetections, 
             // reverse proxy in production) handles the upgrade. Hardcoding
             // localhost breaks every non-local deployment and blocks wss://
             // when the dashboard is served over HTTPS.
+<<<<<<< HEAD
             //
             // buildStreamUrl appends the JWT as a query parameter: browsers
             // cannot set an Authorization header on a WebSocket handshake, and
             // the backend rejects unauthenticated upgrades before accept().
             const ws = new WebSocket(buildStreamUrl(cameraId));
+=======
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(
+                `${wsProtocol}//${window.location.host}/api/ws/stream/${cameraId}`
+            );
+>>>>>>> 315e6e460c503a1d78d8fc1438af2a03582c7e69
 
             ws.onopen = () => {
                 if (isMounted) {

@@ -31,9 +31,9 @@ router = APIRouter()
 async def websocket_stream(websocket: WebSocket, camera_id: int):
     """
     WebSocket endpoint for real-time video streaming with AI overlays.
-    
+
     Sends binary frame data with overlay JSON metadata.
-    Protocol: 
+    Protocol:
     - Binary frame: JPEG bytes
     - JSON metadata: {bbox: [...], tracks: [...], timestamp: ...}
 
@@ -84,14 +84,14 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
 
                 if frame_data:
                     frame, detections = frame_data
-                    
+
                     # Encode frame as JPEG
                     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     frame_bytes = buffer.tobytes()
-                    
+
                     # Send as binary message
                     await websocket.send_bytes(frame_bytes)
-                    
+
                     # Send detection metadata as JSON (handle both dict and object detections)
                     detection_list = []
                     for d in detections:
@@ -120,7 +120,7 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
                                     "y2": bbox[3] if isinstance(bbox, (list, tuple)) else 0
                                 }
                             })
-                    
+
                     await websocket.send_json({
                         "camera_id": camera_id,
                         "detections": detection_list,
@@ -137,9 +137,9 @@ async def websocket_stream(websocket: WebSocket, camera_id: int):
                         "timestamp": _utc_now_iso(),
                         "timestamp_unix": time.time(),
                     })
-                
+
                 await asyncio.sleep(1/30)  # 30 FPS stream
-                
+
             except WebSocketDisconnect:
                 break
             except Exception as e:
@@ -179,22 +179,24 @@ async def mjpeg_stream(camera_id: int):
     async def generate():
         try:
             from backend.services.core_engine.processing_coordinator import get_processing_coordinator
-            
+
+            crlf = b'\r\n'
             while True:
                 coordinator = get_processing_coordinator()
                 frame_data = coordinator.get_latest_frame(camera_id)
-                
+
                 if frame_data:
                     frame = frame_data[0]
                     _, buffer = cv2.imencode('.jpg', frame)
                     frame_bytes = buffer.tobytes()
-                    
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                
+
+                    yield (b'--frame' + crlf
+                           + b'Content-Type: image/jpeg' + crlf + crlf
+                           + frame_bytes + crlf)
+
                 await asyncio.sleep(1/30)
-                
+
         except Exception:
             pass
-    
+
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")

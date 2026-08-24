@@ -14,6 +14,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List
@@ -1729,6 +1730,200 @@ async def root():
             "Kafka Event Streaming (optional)"
         ]
     }
+
+
+# ==================== CityOS Intersection Intelligence ====================
+# Geometry-only traffic layer: digital twin, road-user classification,
+# trajectories, wrong-way / near-miss / VRU safety, flow analytics and
+# signal-optimiser recommendations. No biometrics enter this layer.
+
+@app.get("/api/v1/cityos/status", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_status():
+    """CityOS overview: intersections, object counts, privacy posture."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        return get_cityos_engine().status()
+    except Exception as e:
+        logger.error(f"CityOS status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/twin", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_twin_all():
+    """Digital-twin snapshots for every known intersection."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        return get_cityos_engine().twin()
+    except Exception as e:
+        logger.error(f"CityOS twin failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/twin/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_twin(camera_id: int):
+    """Digital-twin snapshot for the intersection a camera covers."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        twin = get_cityos_engine().twin(camera_id)
+        if twin.get("error"):
+            raise HTTPException(status_code=404, detail=twin["error"])
+        return twin
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS twin failed for camera {camera_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/alerts", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_alerts(
+    kind: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+):
+    """Merged real-time safety alert feed (wrong-way, near-miss, VRU)."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        alerts = get_cityos_engine().alerts(limit=limit, kind=kind)
+        return {"alerts": alerts, "count": len(alerts)}
+    except Exception as e:
+        logger.error(f"CityOS alerts failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/flow/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_flow(camera_id: int, minutes: int = Query(30, le=120)):
+    """Traffic-flow analytics for one camera's intersection."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        return {
+            "intersection_id": iid,
+            "volume_series": inter.flow.volume_series(minutes=minutes),
+            "turning_matrix": inter.flow.turning_matrix(),
+            "speed_summary": inter.flow.speed_summary(),
+            "stats": inter.flow.stats(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS flow failed for camera {camera_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/signal/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_signal_status(camera_id: int):
+    """Signal phase state + adaptive recommendation for an intersection."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        users = inter.perception.active_users()
+        demand = inter.flow.demand_by_approach(users)
+        return {
+            "intersection_id": iid,
+            "status": inter.signal.status(),
+            "recommendation": inter.signal.recommend(demand),
+            "demand_by_approach": demand,
+            "recent_commands": inter.signal.recent_commands(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS signal status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SignalModeRequest(BaseModel):
+    mode: str
+
+
+@app.post("/api/v1/cityos/signal/{camera_id}/mode", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def cityos_set_signal_mode(camera_id: int, payload: SignalModeRequest):
+    """Set signal mode: fixed | adaptive | manual."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        try:
+            status = inter.signal.set_mode(payload.mode)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        return {"intersection_id": iid, "signal": status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS set signal mode failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SignalPhaseRequest(BaseModel):
+    phase: str
+
+
+@app.post("/api/v1/cityos/signal/{camera_id}/phase", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def cityos_force_signal_phase(camera_id: int, payload: SignalPhaseRequest):
+    """Manual operator override: force NS or EW green (audit-logged)."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        try:
+            status = inter.signal.force_phase(payload.phase.upper())
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        return {"intersection_id": iid, "signal": status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS force phase failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cityos/bind", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def cityos_bind_camera(
+    camera_id: int = Body(...),
+    intersection_id: str = Body(...),
+):
+    """Bind a camera to a named intersection (scales 1 -> N intersections)."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        engine.bind_camera(int(camera_id), intersection_id.strip())
+        inter = engine.get_intersection(intersection_id.strip())
+        return {"bound": True, "intersection": inter.summary()}
+    except Exception as e:
+        logger.error(f"CityOS bind failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== Single-port web UI ====================

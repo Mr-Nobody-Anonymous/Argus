@@ -378,6 +378,21 @@ def resolve_path(path: Any) -> Path:
     return p if p.is_absolute() else (PROJECT_ROOT / p)
 
 
+#: Absolute path to the repository root (the directory containing `backend/`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_path(path: Any) -> Path:
+    """Resolve a config path against the project root.
+
+    Relative paths in config.yaml (e.g. ``data/snapshots``) are anchored to the
+    repository root so they resolve identically regardless of the working
+    directory the process was started from. Absolute paths pass through.
+    """
+    p = Path(path)
+    return p if p.is_absolute() else (PROJECT_ROOT / p)
+
+
 def section_to_dict(section: Any) -> Dict[str, Any]:
     """Normalize a config section to a plain dictionary."""
     if section is None:

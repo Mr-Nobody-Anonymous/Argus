@@ -277,4 +277,18 @@ export const clusterAPI = {
     getClusters: () => api.get('/clusters'),
 };
 
+// CityOS intersection intelligence API
+export const cityosAPI = {
+    status: () => api.get('/cityos/status'),
+    twinAll: () => api.get('/cityos/twin'),
+    twin: (cameraId) => api.get(`/cityos/twin/${cameraId}`),
+    alerts: (kind, limit = 50) => api.get('/cityos/alerts', { params: { kind, limit } }),
+    flow: (cameraId, minutes = 30) => api.get(`/cityos/flow/${cameraId}`, { params: { minutes } }),
+    signalStatus: (cameraId) => api.get(`/cityos/signal/${cameraId}`),
+    setSignalMode: (cameraId, mode) => api.post(`/cityos/signal/${cameraId}/mode`, { mode }),
+    forcePhase: (cameraId, phase) => api.post(`/cityos/signal/${cameraId}/phase`, { phase }),
+    bindCamera: (cameraId, intersectionId) =>
+        api.post('/cityos/bind', { camera_id: cameraId, intersection_id: intersectionId }),
+};
+
 export default api;
