@@ -509,13 +509,12 @@ on port 8000), or `npm run dev` in `frontend/` for hot reload on port 3000.
 
 ## 📊 API Reference
 
-**80 addressable operations**: 80 registered routes (71 under `/api/v1`, plus
-`GET /api`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json` and
-`/metrics`), 3 streaming routes and 1 WebSocket route. `GET /` is excluded: it
-serves the dashboard when `frontend/dist` exists and a build hint when it does
-not, so it is not part of the API surface.
+**98 registered routes**: 92 operations are under `/api/v1`; the rest are
+system, streaming, WebSocket, and documentation endpoints. `GET /` is excluded:
+it serves the dashboard when `frontend/dist` exists and a build hint when it
+does not, so it is not part of the API surface.
 
-Of the 71 `/api/v1` operations, **68 require a token and 3 are public**.
+Of the 92 `/api/v1` operations, **89 require a token and 3 are public**.
 Everything requires `Authorization: Bearer <token>` except the entries marked
 *public* below.
 

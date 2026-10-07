@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Import `os` in the database adapter before reading `DATABASE_URL`, so schema initialization succeeds.
 
+- Load service exports lazily so importing the perception layer does not require optional ML and geometry packages.
+- Refresh the documented API route and authentication counts to match the registered FastAPI operations.
+
 ## Draft v0.2.0 notes (not yet released; updated 2026-09-30)
 
 ### Security
