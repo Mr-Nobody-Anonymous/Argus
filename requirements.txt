@@ -44,7 +44,7 @@ scikit-learn>=1.4
 django>=5.0,<6.0
 
 # ── ONNX runtime (model optimisation / InsightFace backend) ──
-onnxruntime>=1.16
+onnxruntime>=1.30.0
 
 # ── HTTP client (used by the Docker healthcheck and diagnostic scripts) ──
 requests>=2.31
