@@ -22,7 +22,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── License Plate Recognition & OCR ──
-paddleocr>=2.7,<3.0
+paddleocr>=3.7.0,<4.0
 paddlepaddle>=2.6
 
 # ── Face recognition & emotion analysis ──
