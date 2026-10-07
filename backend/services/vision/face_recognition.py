@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 from backend.config.config import get_config, section_to_dict, resolve_path
 from backend.database.db import get_db
+from backend.security.crypto import encrypt_embedding, decrypt_embedding, is_encrypted
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,9 @@ class FaceRecognition:
         # Known faces database (loaded from DB)
         self.known_faces: List[dict] = []
         
-        # Known faces directory for storing images
+        # Retained to identify legacy face crops created by older versions.
+        # New registrations never persist source face images.
         self.faces_dir = resolve_path("data/known_faces")
-        self.faces_dir.mkdir(parents=True, exist_ok=True)
         
         if self.enabled:
             self._initialize()
@@ -297,7 +298,7 @@ class FaceRecognition:
 
     def register_face(self, name: str, face_image: np.ndarray) -> bool:
         """
-        Register a new face in the database.
+        Register an encrypted face embedding without persisting the source image.
         
         Args:
             name: Person's name
@@ -306,31 +307,31 @@ class FaceRecognition:
         Returns:
             True if registered successfully
         """
+        if not self.enabled:
+            logger.warning("Face enrollment rejected because face recognition is disabled")
+            return False
+
         try:
             # Resize to standard size
             face_resized = cv2.resize(face_image, (100, 100))
             
-            # Save face image
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{name}_{timestamp}.jpg"
-            filepath = self.faces_dir / filename
-            cv2.imwrite(str(filepath), face_resized)
-            
-            # Store encoding in database
+            # Persist only the encrypted feature vector. The uploaded image and
+            # resized crop remain in memory and are not written to disk.
             encoding_list = face_resized.flatten().tolist()
-            
+            encrypted_encoding = encrypt_embedding(encoding_list)
+
             self.db.execute(
                 """
                 INSERT INTO known_faces (name, encoding, image_path, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (name, json.dumps(encoding_list), str(filepath), datetime.now())
+                (name, encrypted_encoding, None, datetime.now())
             )
             
             # Reload known faces
             self._load_known_faces()
             
-            logger.info(f"Registered face for {name}")
+            logger.info(f"Registered and encrypted face embedding for {name}")
             return True
         
         except Exception as e:
@@ -338,7 +339,7 @@ class FaceRecognition:
             return False
 
     def _load_known_faces(self):
-        """Load known faces from database"""
+        """Load known faces from database, decrypting biometric embeddings"""
         try:
             # Check if table exists
             tables = self.db.fetchall(
@@ -363,7 +364,19 @@ class FaceRecognition:
             self.known_faces = []
             
             for row in rows:
-                encoding = json.loads(row['encoding'])
+                try:
+                    stored_encoding = row["encoding"]
+                    encoding = decrypt_embedding(stored_encoding)
+                    if not is_encrypted(stored_encoding):
+                        # Upgrade legacy plaintext JSON embeddings the first time
+                        # recognition is explicitly enabled.
+                        self.db.execute(
+                            "UPDATE known_faces SET encoding = ? WHERE id = ? AND encoding = ?",
+                            (encrypt_embedding(encoding), row["id"], stored_encoding),
+                        )
+                except Exception as exc:
+                    logger.error(f"Failed to load face embedding for {row['name']}: {exc}")
+                    continue
                 self.known_faces.append({
                     'id': row['id'],
                     'name': row['name'],
@@ -371,7 +384,7 @@ class FaceRecognition:
                     'image_path': row['image_path']
                 })
             
-            logger.info(f"Loaded {len(self.known_faces)} known faces")
+            logger.info(f"Loaded {len(self.known_faces)} known faces (biometric data decrypted securely)")
         
         except Exception as e:
             logger.error(f"Error loading known faces: {e}")

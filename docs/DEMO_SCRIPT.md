@@ -151,9 +151,9 @@
 3. **Scalability**: Designed to handle multiple cameras with queue management
 4. **Secured by default**: JWT auth + three-role RBAC on all 40 protected routes, audit
    trail on every mutation, scheduled data retention
-5. **Measured, not asserted**: the swarm architecture is benchmarked against a
-   linear baseline (+26.8% FPS at identical detection quality), and 44
-   mutation-verified tests guard the pipeline
+5. **Measured carefully**: one recorded 40-frame CPU run showed +26.8% FPS
+   and the same detection count; it did not measure ground-truth accuracy.
+   Use the latest GitHub Actions run for current test status.
 6. **Extensibility**: MQTT integration, API-first design, modular architecture
 
 ---

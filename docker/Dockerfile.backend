@@ -21,8 +21,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend /app/backend
 COPY config /app/config
 
-# Create data directory
-RUN mkdir -p /app/data/snapshots
+# Create data directory and non-root user
+RUN mkdir -p /app/data/snapshots /app/data/clips \
+    && useradd --create-home --uid 10001 argus \
+    && chown -R argus:argus /app
+
+USER argus
 
 # Expose port
 EXPOSE 8000

@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 # The repository had 44 passing tests and nothing that ran them. A test suite
 # nobody executes is documentation, not a safety net.
 #
@@ -303,7 +306,7 @@ jobs:
 
       - name: Run test suites
         run: |
-          pytest tests/test_regression.py tests/test_api_security.py \
+          pytest tests/test_regression.py tests/test_api_security.py tests/test_security_hardening.py \
                  -v --tb=short --durations=10
 
       - name: Fail if too much was skipped
@@ -402,7 +405,7 @@ jobs:
         # Catches a missing import - App.jsx once imported a Login.jsx that had
         # never been committed, so a fresh clone could not build at all.
         run: |
-          npm ci || npm install
+          npm ci
           npm run build
 
       - name: Confirm build output exists

@@ -20,7 +20,7 @@ in the README for how to obtain each.
 
 ```bash
 python backend/scripts/init_db.py                   # Argus tables
-python backend/scripts/run_admin.py --setup-only   # Django auth tables + admin/admin123
+python backend/scripts/run_admin.py --setup-only   # Django auth tables + secure admin setup
 uvicorn backend.api.main:app --reload
 
 cd frontend && npm install && npm run dev

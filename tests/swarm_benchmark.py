@@ -8,9 +8,10 @@ the consortium broker's fixed 33 ms budget (a 30 FPS GPU assumption) throttled
 the detector to 0.218 on CPU, so it skipped 4 of every 5 frames and reported
 zero detections — while /health showed model_loaded=true and healthy timings.
 
-This harness runs the SAME frames through both pipelines in-process and reports
-throughput, latency, CPU, and — most importantly — detection counts. A faster
-pipeline that sees fewer objects is not an optimisation.
+This harness runs the SAME frames through both pipeline variants in separate
+processes and reports throughput, latency, CPU, and detection counts. Matching
+counts are a useful regression signal, but they are not a ground-truth accuracy
+measurement.
 
 Usage:
     python tests/swarm_benchmark.py                 # 100 frames each
@@ -155,6 +156,15 @@ def render_table(results: List[Dict]) -> str:
     return "\n".join(out)
 
 
+def display_clip_path(clip: Path) -> str:
+    """Keep machine-specific absolute paths out of committed benchmark output."""
+    resolved = clip.resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return resolved.name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark swarm vs linear pipeline")
     parser.add_argument("--clip", default="data/demo_clip.mp4")
@@ -259,7 +269,7 @@ def main() -> int:
     if args.json:
         out_path = Path(args.json)
         out_path.write_text(json.dumps(
-            {"clip": str(clip), "frames": args.frames, "results": results}, indent=2
+            {"clip": display_clip_path(clip), "frames": args.frames, "results": results}, indent=2
         ))
         print(f"\nWrote {out_path}")
 

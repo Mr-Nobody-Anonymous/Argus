@@ -40,13 +40,18 @@ LEGAL_HEADINGS = {
     ("west", "left"): "N",
     ("west", "right"): "S",
 }
+# Bike lanes follow the through movement of their approach.
+for _a in APPROACHES:
+    LEGAL_HEADINGS[(_a, "bike")] = LEGAL_HEADINGS[(_a, "through")]
 
 # Stop-line coordinate per approach (normalised). Vehicles on the north
 # approach travel southward and cross y=0.32; symmetric for the others.
 DEFAULT_STOP_LINES = {"north": 0.32, "south": 0.68, "west": 0.32, "east": 0.68}
 
 # Lane band offsets across each approach road (fraction of road half-width).
-LANE_OFFSETS = {"left": -0.28, "through": 0.0, "right": 0.28}
+# Bike lanes sit at the road edge, beyond the right-turn band.
+LANE_OFFSETS = {"left": -0.28, "through": 0.0, "right": 0.28,
+                "bike": 0.42}
 
 
 class Lane:

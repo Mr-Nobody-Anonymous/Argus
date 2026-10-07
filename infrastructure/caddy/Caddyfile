@@ -1,0 +1,45 @@
+# Argus Production Caddyfile - Automatic HTTPS, WebSocket Proxying & Security Headers
+# Usage:
+#   caddy run --config infrastructure/caddy/Caddyfile
+#
+# Replace argus.example.com with your actual domain or dynamic DNS hostname.
+
+{$ARGUS_DOMAIN:argus.example.com} {
+    # Automatic HTTPS is handled by Caddy via Let's Encrypt / ZeroSSL
+
+    # Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # Reverse proxy to Argus backend
+    reverse_proxy {$ARGUS_UPSTREAM:127.0.0.1:8000} {
+        # Preserve real client IP for audit logging and rate limiting
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+
+        # WebSocket support for video stream and live event feeds
+        transport http {
+            keepalive 60s
+        }
+    }
+
+    # Compress responses
+    encode gzip zstd
+
+    # Logging
+    log {
+        output file /var/log/caddy/argus_access.log {
+            roll_size 10MB
+            roll_keep 5
+        }
+        format json
+    }
+}

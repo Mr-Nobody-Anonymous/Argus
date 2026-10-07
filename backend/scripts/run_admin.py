@@ -5,15 +5,13 @@ Run the Django admin server alongside the FastAPI backend.
 Usage:
     python backend/scripts/run_admin.py            # serves on :8001
     python backend/scripts/run_admin.py 0.0.0.0:8002
-<<<<<<< HEAD
     python backend/scripts/run_admin.py --setup-only   # create tables + admin, then exit
-=======
->>>>>>> 315e6e460c503a1d78d8fc1438af2a03582c7e69
 
-Then open http://localhost:8001/admin/ and sign in with admin / admin123
-(created automatically on first run).
+Then open http://localhost:8001/admin/
+Admin credentials are created automatically on first run (or set via ARGUS_ADMIN_PASSWORD).
 """
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -46,20 +44,34 @@ def ensure_schema():
     call_command('migrate', '--run-syncdb', verbosity=0)
 
 
-def ensure_admin_user():
+def ensure_admin_user(username: str = "admin", password: str = None):
     from django.contrib.auth.models import User
 
-    if not User.objects.filter(username='admin').exists():
-        print("Creating admin user...")
-        User.objects.create_superuser('admin', 'admin@argus.local', 'admin123')
-        print("Admin user created: admin / admin123")
+    if not User.objects.filter(is_superuser=True).exists():
+        admin_pass = password or os.environ.get("ARGUS_ADMIN_PASSWORD", "").strip()
+        is_generated = False
+        if not admin_pass:
+            admin_pass = secrets.token_urlsafe(16)
+            is_generated = True
+
+        u = User.objects.create_superuser(username, f"{username}@argus.local", admin_pass)
+        if is_generated:
+            from backend.api.auth import set_user_must_change_password
+            set_user_must_change_password(u.id, True)
+            print("\n" + "=" * 64)
+            print(" [SECURITY] Generated initial superuser credentials:")
+            print(f"   Username: {username}")
+            print(f"   Password: {admin_pass}")
+            print("   Store this securely. Password change is enforced on first login!")
+            print("=" * 64 + "\n")
+        else:
+            print(f"[SECURITY] Superuser '{username}' initialized from environment.")
 
 
 def main():
     ensure_schema()
     ensure_admin_user()
 
-<<<<<<< HEAD
     # --setup-only exists for CI and first-time setup: the auth tables live in
     # Django's migrations, and without them the security suite skips almost
     # every test. Creating them must not require starting a blocking server.
@@ -69,9 +81,6 @@ def main():
 
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     addrport = args[0] if args else '8001'
-=======
-    addrport = sys.argv[1] if len(sys.argv) > 1 else '8001'
->>>>>>> 315e6e460c503a1d78d8fc1438af2a03582c7e69
     print(f"\nStarting Django admin on {addrport} -> http://localhost:8001/admin/\n")
 
     # --noreload keeps the auto-created superuser logic from running twice.

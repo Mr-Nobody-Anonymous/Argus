@@ -653,11 +653,3 @@ Typed endpoint exports:
 ```
 
 ---
-
-## 🤝 Integration Points
-
-| System | Protocol | Data |I already updated the README.md. Now let me update the FOLDER_STRUCTURE.md with the same level of comprehensive detail reflecting the current state.
-
-<read_file>
-<path>c:/Users/hp/Desktop/Argus/FOLDER_STRUCTURE.md</path>
-</read_file>

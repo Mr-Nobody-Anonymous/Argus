@@ -194,13 +194,20 @@ db = None
 
 
 def get_db():
-    """Get database instance"""
+    """Get database instance (SQLite or PostgreSQL based on configuration)"""
     global db
     if db is None:
         from backend.config.config import get_config
         config = get_config()
+        db_url = os.environ.get("DATABASE_URL", "").strip() or config.database.url
+
+        if db_url.startswith("postgresql://") or db_url.startswith("postgres://"):
+            from backend.database.postgres import PostgresDatabase
+            db = PostgresDatabase(db_url)
+            return db
+
         # Parse path from URL (remove sqlite:/// prefix)
-        db_path = Path(config.database.url.replace("sqlite:///", ""))
+        db_path = Path(db_url.replace("sqlite:///", ""))
         # Anchor relative paths to the project root so the DB lands in the same
         # place no matter which directory the process was launched from.
         if not db_path.is_absolute():

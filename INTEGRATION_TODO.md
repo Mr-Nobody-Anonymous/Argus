@@ -84,9 +84,9 @@ Additional verification performed since:
 | RBAC matrix across 16 endpoints × 3 roles | ✅ 0 mismatches against the documented role table |
 | Audit trail | ✅ Login, successful mutation, and a viewer's **denied** mutation all recorded with actor, role, IP, outcome |
 | Brute-force lockout | ✅ 5 × 401 then 429; the correct password is also refused while locked |
-| Detection quality | ✅ 12–15 detections/frame; ~16 stable track IDs for a ~12-person scene |
-| Automated tests | ✅ 44 passing (`test_regression.py` 23, `test_api_security.py` 21) |
-| Swarm vs linear | ✅ +26.8% FPS at identical detection quality |
+| Fixture output | 12.8 detections/frame in one recorded sample; this is a count, not an accuracy measurement. |
+| Automated pytest suites | Regression, API security, CityOS, and sensor suites are collected by CI; check the latest Actions run for pass status. |
+| Swarm A/B sample | One 40-frame run showed +26.8% FPS and equal detection counts; no ground-truth accuracy comparison was run. |
 
 ### Known deviations from the original integration notes
 

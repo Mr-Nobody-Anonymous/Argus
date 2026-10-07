@@ -12,9 +12,10 @@
 
 <div align="center">
 
-![GitHub Repo stars](https://img.shields.io/github/stars/Mr-Nobody-Anonymous/Argus?style=social)
+[![CI](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/ci.yml/badge.svg)](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/ci.yml)
+[![Security Scan](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/security.yml/badge.svg)](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/security.yml)
+[![Docker](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/docker.yml/badge.svg)](https://github.com/Mr-Nobody-Anonymous/Argus/actions/workflows/docker.yml)
 ![License](https://img.shields.io/github/license/Mr-Nobody-Anonymous/Argus?color=blue)
-![Issues](https://img.shields.io/github/issues/Mr-Nobody-Anonymous/Argus?color=red)
 ![Last Commit](https://img.shields.io/github/last-commit/Mr-Nobody-Anonymous/Argus?color=green)
 
 ---
@@ -48,30 +49,21 @@ The system employs a **decentralised multi-agent swarm** where autonomous agents
 
 ## 📍 Project Status
 
-**Working and verified end-to-end** (live run against a looping demo clip on CPU):
+**Current Development Status:** **Beta / Hardened Edge Prototype**
 
-| Area | Status | Evidence |
+| Architecture Component | Status | Implementation Details & Evidence |
 |---|---|---|
-| Detection + tracking pipeline | ✅ Working | 12–15 detections/frame, ~16 stable track IDs for a ~12-person scene |
-| JWT auth + 3-role RBAC | ✅ Enforced on all 40 protected API routes | `tests/test_api_security.py` — 21 tests |
-| Audit trail | ✅ Writing | Every mutation + auth attempt, including `denied` rows |
-| Data retention | ✅ Scheduled | Runs every 6h; surfaced in `/api/v1/health` |
-| Prometheus metrics | ✅ Exposed | `GET /metrics` |
-| Frontend login + token refresh | ✅ Working | Verified through the Vite proxy |
-| Swarm vs linear benchmark | ✅ Measured | +26.8% FPS at identical detection quality |
-| Regression suite | ✅ 44 tests green | `tests/test_regression.py`, `tests/test_api_security.py` |
+| **Detection & Tracking Pipeline** | ✅ Working | YOLOv8n + DeepTracker (Kalman filter + Hungarian matching). CPU baseline: ~1.3–1.6 FPS/cam; GPU: ~30 FPS/cam. |
+| **Authentication & RBAC** | ✅ Enforced | JWT + 3-role RBAC (`admin`, `operator`, `viewer`). Sliding-window rate limiter protects auth routes against brute-force. |
+| **Face Recognition & Biometrics** | 🔒 Opt-in | Disabled by default. When enabled, embeddings are AES-256-GCM encrypted; new enrollments do not save source face crops. Older plaintext image files require explicit cleanup. |
+| **Cryptographic Audit Trail** | ✅ Tamper-Evident | Append-only SHA-256 hash chaining with integrity verification (`GET /api/v1/audit/integrity`). |
+| **Database Architecture** | ✅ Dual-Tier | SQLite (default zero-install edge) + PostgreSQL adapter (`backend/database/postgres.py`) with migration tooling. |
+| **CI & Security Workflows** | ⚙️ Configured | GitHub Actions cover Python 3.11/3.13, frontend builds, security scans, and Docker image checks; badges above link to the latest workflow runs, when available. |
+| **Scientific Evaluation Set** | ⚠️ Not published | The evaluation harness exists, but this repository does not include a public labeled ground-truth dataset yet. |
+| **Swarm Agent Benchmark** | 📊 One recorded run | On a bundled 40-frame CPU sample: 1.27 FPS linear vs 1.61 FPS swarm, with the same detection count; no ground-truth accuracy comparison or hardware metadata. |
+| **TLS / Production Exposure** | ⚠️ Reverse Proxy Required | Cleartext HTTP is development-only. Production requires fronting with Caddy/Nginx (recipes in `infrastructure/`). |
 
-**Not yet production-ready** — these are known gaps, tracked with acceptance criteria in [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md):
-
-| Gap | Impact |
-|---|---|
-| No TLS termination built in | Tokens travel in cleartext unless you front it with a reverse proxy |
-| Face embeddings stored unencrypted | Biometric data at rest needs encryption before real deployment |
-| SQLite only | Single-writer; PostgreSQL migration is specified but not built |
-| No CI/CD pipeline | Tests exist but nothing runs them automatically |
-| Evolutionary engine has no labelled eval set | It optimises against no ground truth, so it can converge on nothing meaningful |
-
-Performance note: on CPU the pipeline runs at **~1.3–1.6 FPS per camera** with YOLOv8n. The 30 FPS figures in older docs assumed GPU inference.
+> 📖 **Security Policy: [SECURITY.md](SECURITY.md)** · **Database Migration: [docs/DATABASE_MIGRATION.md](docs/DATABASE_MIGRATION.md)** · **Roadmap: [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md)**
 
 ---
 
@@ -99,7 +91,7 @@ and it is safe to re-run — everything below is skipped once it is already done
   Argus is running
     Dashboard   http://localhost:8000
     API docs    http://localhost:8000/docs
-    Login       admin / admin123
+    Login       admin (set with: python argus.py create-admin)
 
     Stop it     python argus.py stop
 ```
@@ -118,6 +110,7 @@ Makefile is a thin wrapper, never a second implementation — Windows has no
 | `python argus.py start` | Set everything up and run it |
 | `python argus.py stop` | Stop everything (graceful, then forced) |
 | `python argus.py status` | Show mode, port, PID and health |
+| `python argus.py create-admin` | Create or update admin credentials (interactive prompt) |
 | `python argus.py doctor` | Check this machine *before* installing |
 | `python argus.py reset` | Delete the venv/build (`--all` also drops the DB) |
 
@@ -155,7 +148,7 @@ pip install -r requirements.txt
 # invalidates all issued tokens (fine for a demo, useless in production).
 export ARGUS_JWT_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
 
-python -m uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn backend.api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ### 2. Create a login
@@ -164,18 +157,11 @@ Argus authenticates against the **Django `auth_user` table** — there is no
 second user store to drift out of sync. Create the first superuser:
 
 ```bash
-# Create the Django auth tables and an admin/admin123 account, then exit:
+# Create the Django auth tables and initialize a secure superuser:
 python backend/scripts/run_admin.py --setup-only
 
-python backend/scripts/run_admin.py 0.0.0.0:8001   # then visit /admin
-# or create one directly:
-python -c "
-import django, os
-os.environ.setdefault('DJANGO_SETTINGS_MODULE','backend.django_admin.settings')
-django.setup()
-from django.contrib.auth.models import User
-User.objects.create_superuser('admin','admin@example.com','changeme')
-"
+# Set a password interactively before first login
+python argus.py create-admin --username admin
 ```
 
 **Roles** are derived from Django group membership: a user in the `operator`
@@ -359,7 +345,7 @@ curl http://localhost:8000/api/v1/cameras -H "Authorization: Bearer $TOKEN"
 | **Logic Mutator** | Sandboxed rule gen | Synthesises, tests, and mutates Python detection-filter rules (sandboxed `eval`). |
 | **Evolutionary Engine** | Cross-agent optimiser | Runs a self-contained genetic algorithm (elitism, crossover, Gaussian mutation) over the pipeline parameter space. No external GA library is used. |
 
-#### Does the swarm actually help? (measured, not asserted)
+#### What one recorded swarm run measured
 
 40 frames of a 640×480 clip, CPU inference, each variant in a **separate
 process** so module-level singletons cannot leak state between runs:
@@ -369,9 +355,7 @@ process** so module-level singletons cannot leak state between runs:
 | Linear baseline | 1.27 | 784.20 ms | 840.84 ms | 12.8 | 0 |
 | **Swarm** | **1.61** | **612.78 ms** | **750.53 ms** | **12.8** | 0 |
 
-**+26.8% throughput, −21.9% p50 latency, identical detection quality.** The gain
-comes from deferring optional enrichment (face, LPR) under load while the
-detector still runs on every frame.
+**In this recorded run only:** the swarm processed 1.61 vs 1.27 FPS (+26.8%) and p50 latency was 612.78 vs 784.20 ms (−21.9%). Both modes returned the same mean count (12.8 detections/frame), but this benchmark has no ground-truth labels, so it does not establish equal detection accuracy. Hardware metadata was not captured; treat these figures as one sample, not a general performance claim.
 
 Reproduce it yourself:
 
@@ -853,10 +837,10 @@ log line, with any `extra={...}` fields merged in — so logs can be filtered by
 ### The suites that gate correctness
 
 ```bash
-pytest        # collects exactly these two suites (see pytest.ini)
+pytest -q     # collects maintained test_*.py suites under tests/
 ```
 
-**126 tests, all passing** in ~17 s (1 skipped when the events table is empty).
+Check the latest GitHub Actions run for current pass status; suite counts and results change as tests evolve.
 
 Every push and pull request runs these on Python 3.11 and 3.13 via
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml), which additionally
@@ -865,14 +849,11 @@ is refused with `401`, and `/metrics` emits `argus_` lines — plus a secret
 scan, a gitignore-hygiene check, and a frontend build. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-| Suite | Tests | Guards against |
+| Suite group | Files | Coverage |
 |---|---|---|
-| `tests/test_regression.py` | 184 | Pipeline defects: Kalman shape/transition errors, track identity churn at realistic frame rates, primary-detector starvation, skipped frames reported as empty, event-dedup storms, zone-alert payload shapes, unbounded per-track state, snapshot disk ceiling, dormant-module documentation drift, camera liveness persisted to disk, launcher portability, SPA fallback swallowing API 404s, perception-model provenance and evidence rules, stream-clock aging on replayed footage, relationship decay, capability planning, change-detection baseline maturity and hour-of-day separation, single-frame vs behavioural relationship claims, unread-text honesty, evidence grounding, perception persistence and memory bounds, appearance-descriptor colour constancy under lighting change, cross-camera transit plausibility, retention coverage of every persisted table |
-| `tests/test_api_security.py` | 23 | Unauthenticated routes, forged/expired/foreign-signed tokens, refresh-as-access replay, privilege escalation via a tampered `role` claim, orphaned/duplicate role grants, plaintext secrets in config |
+| Maintained pytest suites | tests/test_*.py | Pipeline regression, API authorization, security hardening, CityOS, and sensor behavior. pytest.ini defines collection. |
 
-These are **mutation-verified** — deliberately reintroducing a bug (e.g. the
-buggy Kalman `transitionMatrix`) makes the relevant test fail with a readable
-message, so the suite is proven to detect the regression it claims to cover.
+The regression suite contains targeted cases for previously observed failures. The latest workflow run is the source of truth for whether the current tree passes.
 
 `test_api_security.py` includes a static sweep that walks the live route table
 and asserts every `/api` route outside the public allowlist carries an auth

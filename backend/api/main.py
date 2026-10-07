@@ -200,14 +200,45 @@ if _cors_origin_regex:
         _cors_origin_regex,
     )
 
+# Disallow wildcard origin with credentials to prevent browser rejection and CSRF/origin leakage
+_allow_credentials = True
+if "*" in _cors_origins:
+    if os.environ.get("ARGUS_ENV", "").lower() == "production":
+        logger.warning("Wildcard CORS origin '*' detected with credentials in production; stripping '*' for safety.")
+        _cors_origins = [o for o in _cors_origins if o != "*"]
+    else:
+        _allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_origin_regex=_cors_origin_regex,
-    allow_credentials=True,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+_allowed_hosts_env = os.environ.get("ARGUS_ALLOWED_HOSTS", "").strip()
+if _allowed_hosts_env:
+    _allowed_hosts = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+
+from backend.security.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Inject standard defensive HTTP headers into all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 # Paths audited by the login handler itself (which knows the attempted
@@ -345,7 +376,12 @@ async def login(request: Request, credentials: LoginRequest):
         "access_token": create_token(user, "access"),
         "refresh_token": create_token(user, "refresh"),
         "token_type": "bearer",
-        "user": {"id": user.id, "username": user.username, "role": user.role},
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "must_change_password": user.must_change_password,
+        },
     }
 
 
@@ -362,7 +398,12 @@ async def refresh_token(payload: RefreshRequest):
     return {
         "access_token": create_token(user, "access"),
         "token_type": "bearer",
-        "user": {"id": user.id, "username": user.username, "role": user.role},
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "must_change_password": user.must_change_password,
+        },
     }
 
 
@@ -375,7 +416,41 @@ async def whoami(user: AuthUser = Depends(get_current_user)):
         "role": user.role,
         "is_superuser": user.is_superuser,
         "email": user.email,
+        "must_change_password": user.must_change_password,
     }
+
+
+@app.post("/api/v1/auth/password", response_model=dict)
+async def change_password(payload: dict = Body(...), user: AuthUser = Depends(get_current_user)):
+    """Change the authenticated user's password."""
+    current_pass = payload.get("current_password", "")
+    new_pass = payload.get("new_password", "")
+
+    if not new_pass or len(new_pass) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be at least 8 characters long."
+        )
+
+    # Re-verify current credentials
+    authenticated = authenticate_user(user.username, current_pass)
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect."
+        )
+
+    from backend.api.auth import update_user_password
+    success = update_user_password(user.id, new_pass)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update password.")
+
+    get_audit_log().record(
+        username=user.username, user_id=user.id, role=user.role,
+        action="password_change", resource="auth", outcome="success"
+    )
+    return {"status": "success", "message": "Password updated successfully."}
+
 
 
 @app.get("/api/v1/audit", response_model=dict)
@@ -394,6 +469,13 @@ async def get_audit_entries(
         outcome=outcome, limit=limit, offset=offset,
     )
     return {"entries": entries, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/v1/audit/integrity", response_model=dict, dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def verify_audit_integrity():
+    """Verify cryptographic hash-chain integrity of the audit log. Admin only."""
+    return get_audit_log().verify_integrity()
+
 
 
 # ==================== Camera Endpoints ====================
@@ -882,12 +964,19 @@ async def register_face(name: str = Form(...), file: UploadFile = File(...)):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         face_recognition = get_face_recognition()
+        if not face_recognition.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Face recognition is disabled. Enable it explicitly in config/config.yaml to enroll faces.",
+            )
         success = face_recognition.register_face(name, gray)
         
         if success:
             return {"status": "registered", "name": name}
         else:
             raise HTTPException(status_code=500, detail="Failed to register face")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error registering face: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -919,6 +1008,32 @@ async def get_face_recognition_status():
     except Exception as e:
         logger.error(f"Error getting face status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Evolutionary Optimization & Evaluation ====================
+
+@app.get("/api/v1/evolutionary/evaluation", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def get_evolutionary_evaluation():
+    """Evaluate evolutionary engine and active variant against ground-truth dataset."""
+    try:
+        from backend.services.core_engine.evolutionary_engine import get_evolutionary_engine
+        engine = get_evolutionary_engine()
+        return engine.evaluator.evaluate_ground_truth()
+    except Exception as e:
+        logger.error(f"Evolutionary ground-truth evaluation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/evolutionary/status", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def get_evolutionary_status():
+    """Get status of evolutionary cognitive optimization engine."""
+    try:
+        from backend.services.core_engine.evolutionary_engine import get_evolutionary_engine
+        return get_evolutionary_engine().get_status()
+    except Exception as e:
+        logger.error(f"Error getting evolutionary engine status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ==================== Webcam Test Endpoints ====================
@@ -2132,6 +2247,238 @@ async def cityos_sensor_health(camera_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/cityos/sensors/{camera_id}", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_ADMIN))])
+async def cityos_register_sensor(camera_id: int, payload: dict = Body(...)):
+    """Register a physical sensor (4D LiDAR, radar) on an intersection.
+
+    Body: {sensor_id, sensor_type, pose?: {east_m, north_m, up_m, yaw_deg,
+    pitch_deg, roll_deg}, label?}
+    """
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        return engine.register_sensor(
+            iid, str(payload.get("sensor_id", "")),
+            str(payload.get("sensor_type", "lidar")),
+            pose=payload.get("pose"), label=str(payload.get("label", "")),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS register sensor failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cityos/lidar/{camera_id}", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def cityos_ingest_lidar(camera_id: int, payload: dict = Body(...)):
+    """Ingest one 4D LiDAR frame into the sensor-abstraction layer.
+
+    Body: {sensor_id, points: [{x, y, z, radial_velocity, intensity,
+    return_index}], timestamp?, sequence?, expected_packets?,
+    received_packets?}
+
+    Points are sensor-local (forward/left/up metres). They are posed into
+    world coordinates, clustered and fused with camera tracks - the camera
+    detector is NOT assumed to be the source of truth.
+    """
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        result = engine.ingest_lidar(
+            iid, str(payload.get("sensor_id", "lidar_1")),
+            payload.get("points") or [],
+            timestamp=payload.get("timestamp"),
+            sequence=int(payload.get("sequence", 0)),
+            expected_packets=int(payload.get("expected_packets", 0)),
+            received_packets=int(payload.get("received_packets", 0)),
+        )
+        engine.get_intersection(iid).audit_governance(
+            "lidar_frame_ingested", sensor_id=result["sensor_id"],
+            points=result["points_received"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS lidar ingest failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/bikes/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_bikes(camera_id: int):
+    """Cyclist analytics: volumes, speeds, wrong-way cycling, conflicts."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        users = inter.perception.active_users()
+        return {
+            "intersection_id": iid,
+            **inter.bikes.stats(),
+            "volume_series": inter.bikes.volume_series(minutes=30),
+            "speed_summary": inter.bikes.speed_summary(),
+            "queue_by_approach": inter.bikes.queue_status(users),
+            "recent_events": inter.bikes.recent_events(limit=20),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS bikes failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/incidents", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_incidents(limit: int = Query(50, le=200)):
+    """Operational incidents across all intersections (collisions,
+    junction blocking, abnormal congestion, prohibited-area pedestrians)."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        incidents = get_cityos_engine().incidents(limit=limit)
+        return {"incidents": incidents, "count": len(incidents)}
+    except Exception as e:
+        logger.error(f"CityOS incidents failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/controller/{camera_id}", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_controller(camera_id: int):
+    """NTCIP controller status: observed vs commanded phase, comm health."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        return {
+            "controller": inter.controller.status(),
+            "signal_performance": inter.signal.performance(),
+            "recent_audit": inter.controller.recent_audit(limit=20),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS controller status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cityos/controller/{camera_id}/command",
+          response_model=dict,
+          dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def cityos_controller_command(camera_id: int, payload: dict = Body(...)):
+    """Send a validated command to the NTCIP controller client.
+
+    Body: {action: hold|force_phase|force_state, phase?, state?}
+    SIMULATION mode by default - no physical device is actuated. Commands
+    are validated first; unsafe transitions are rejected with 400.
+    """
+    try:
+        from backend.services.cityos import get_cityos_engine
+        from backend.services.cityos.ntcip import CommandRejected
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        try:
+            ack = inter.controller.send_command(
+                str(payload.get("action", "")),
+                phase=payload.get("phase"),
+                state=payload.get("state"),
+            )
+        except CommandRejected as rej:
+            raise HTTPException(status_code=400, detail=str(rej))
+        inter.audit_governance("controller_command",
+                               action=payload.get("action"))
+        return {"ack": ack, "controller": inter.controller.status()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS controller command failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/replay/{camera_id}/export", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_export_replay(camera_id: int):
+    """Export the deterministic replay recording for after-the-fact review."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        engine = get_cityos_engine()
+        with engine._lock:
+            iid = engine.camera_to_intersection.get(camera_id)
+        if iid is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no intersection bound to camera {camera_id}")
+        inter = engine.get_intersection(iid)
+        recording = inter.export_replay()
+        inter.audit_governance("replay_exported",
+                               snapshots=len(recording["snapshots"]))
+        return recording
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS replay export failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/cityos/replay/reconstruct", response_model=dict,
+          dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_reconstruct(payload: dict = Body(...)):
+    """Deterministic reconstruction from an exported replay recording.
+
+    Body: an export from /cityos/replay/{camera_id}/export. Returns a
+    read-only view of exactly what the twin believed at each instant.
+    """
+    try:
+        from backend.services.cityos import get_cityos_engine
+        reconstruction = get_cityos_engine().reconstruct(payload)
+        if reconstruction.get("error"):
+            raise HTTPException(status_code=400,
+                                detail=reconstruction["error"])
+        return reconstruction
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CityOS reconstruct failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/cityos/governance", response_model=dict,
+         dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def cityos_governance():
+    """Privacy/data-governance posture: retention policies + audit counts."""
+    try:
+        from backend.services.cityos import get_cityos_engine
+        return get_cityos_engine().governance()
+    except Exception as e:
+        logger.error(f"CityOS governance failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Single-port web UI ====================
 # Serving the built React app from FastAPI means `argus start` exposes ONE url
 # (http://localhost:8000) with no Node runtime, no second port and no proxy.
@@ -2203,5 +2550,10 @@ else:
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host=os.environ.get("ARGUS_BIND", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "8000")),
+    )

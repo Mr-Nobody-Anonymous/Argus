@@ -79,7 +79,7 @@ docker-start: .env
 	@echo ""
 	@echo "  Argus is starting - first boot loads the detector, give it ~60s."
 	@echo "  Dashboard   http://localhost:8000"
-	@echo "  Login       admin / admin123"
+	@echo "  Login       admin (set via ARGUS_ADMIN_PASSWORD in .env or python argus.py create-admin)"
 	@echo "  Logs        make docker-logs"
 	@echo "  Stop        make docker-stop"
 	@echo ""

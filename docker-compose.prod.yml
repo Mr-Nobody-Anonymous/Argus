@@ -32,7 +32,7 @@ services:
     environment:
       # Fail fast rather than start with an ephemeral key that silently signs
       # everyone out on restart.
-      ARGUS_JWT_SECRET: "${ARGUS_JWT_SECRET:?set ARGUS_JWT_SECRET in .env - generate one with openssl rand -base64 48}"
+      ARGUS_JWT_SECRET: ${ARGUS_JWT_SECRET:?set ARGUS_JWT_SECRET in .env - generate one with openssl rand -base64 48}
       ARGUS_ADMIN_PASSWORD: ${ARGUS_ADMIN_PASSWORD:-}
       ARGUS_DATA_DIR: /app/data
       YOLO_CONFIG_DIR: /app/data/.ultralytics
@@ -41,6 +41,12 @@ services:
       # Same-origin by default: the API serves the dashboard. Only set this if
       # you host the UI separately (e.g. on Vercel).
       ARGUS_CORS_ORIGINS: ${ARGUS_CORS_ORIGINS:-}
+      ARGUS_BIOMETRIC_KEY: ${ARGUS_BIOMETRIC_KEY:-}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/argus.db}
+
+    # Container security hardening: drop privilege escalation
+    security_opt:
+      - no-new-privileges:true
 
     volumes:
       # Named volume, not a bind mount: survives `down`, `pull` and image
@@ -73,5 +79,31 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Optional production reverse proxy with automated TLS termination (Let's Encrypt)
+  # Run with: docker compose -f docker-compose.prod.yml --profile tls up -d
+  caddy:
+    image: caddy:2-alpine
+    container_name: argus-caddy
+    restart: unless-stopped
+    profiles:
+      - tls
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ARGUS_DOMAIN: ${ARGUS_DOMAIN:-localhost}
+      ARGUS_UPSTREAM: argus:8000
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      argus:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   argus-data:
+  caddy_data:
+  caddy_config:

@@ -151,6 +151,82 @@ def verify_django_password(raw_password: str, encoded: str) -> bool:
     return False
 
 
+def hash_password(raw_password: str) -> str:
+    """Generate standard Django-compatible PBKDF2-SHA256 password hash."""
+    salt = secrets.token_urlsafe(12)
+    iterations = 720_000
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", raw_password.encode("utf-8"), salt.encode("utf-8"), iterations
+    )
+    b64_digest = base64.b64encode(digest).decode("ascii")
+    return f"pbkdf2_sha256${iterations}${salt}${b64_digest}"
+
+
+def _ensure_security_meta_table(conn: sqlite3.Connection) -> None:
+    """Create user_security_meta table if not exists for security policies."""
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_security_meta (
+                user_id INTEGER PRIMARY KEY,
+                must_change_password INTEGER DEFAULT 0,
+                password_changed_at TIMESTAMP
+            )
+        """)
+    except sqlite3.Error as exc:
+        logger.debug(f"Could not ensure user_security_meta table: {exc}")
+
+
+def set_user_must_change_password(user_id: int, must_change: bool = True) -> bool:
+    """Flag a user account to require a password change on next action."""
+    try:
+        with _connect() as conn:
+            _ensure_security_meta_table(conn)
+            conn.execute(
+                "INSERT INTO user_security_meta (user_id, must_change_password) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET must_change_password = excluded.must_change_password",
+                (user_id, 1 if must_change else 0),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as exc:
+        logger.error(f"Failed to set must_change_password flag for user {user_id}: {exc}")
+        return False
+
+
+def get_user_must_change_password(conn: sqlite3.Connection, user_id: int) -> bool:
+    """Check if user is required to change password."""
+    try:
+        _ensure_security_meta_table(conn)
+        row = conn.execute(
+            "SELECT must_change_password FROM user_security_meta WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return bool(row["must_change_password"]) if row else False
+    except sqlite3.Error:
+        return False
+
+
+def update_user_password(user_id: int, new_password: str) -> bool:
+    """Update password hash in auth_user table and clear must_change_password flag."""
+    new_hash = hash_password(new_password)
+    try:
+        with _connect() as conn:
+            _ensure_security_meta_table(conn)
+            conn.execute("UPDATE auth_user SET password = ? WHERE id = ?", (new_hash, user_id))
+            conn.execute(
+                "INSERT INTO user_security_meta (user_id, must_change_password, password_changed_at) "
+                "VALUES (?, 0, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(user_id) DO UPDATE SET must_change_password = 0, password_changed_at = CURRENT_TIMESTAMP",
+                (user_id,),
+            )
+            conn.commit()
+            return True
+    except sqlite3.Error as exc:
+        logger.error(f"Failed to update user password: {exc}")
+        return False
+
+
+
 # ── User lookup ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -161,6 +237,7 @@ class AuthUser:
     is_superuser: bool
     is_staff: bool
     email: str = ""
+    must_change_password: bool = False
 
     def has_role(self, required: str) -> bool:
         return role_rank(self.role) >= role_rank(required)
@@ -243,6 +320,7 @@ def authenticate_user(username: str, password: str) -> Optional[AuthUser]:
                 is_superuser=bool(row["is_superuser"]),
                 is_staff=bool(row["is_staff"]),
                 email=row["email"] or "",
+                must_change_password=get_user_must_change_password(conn, row["id"]),
             )
     except sqlite3.Error as exc:
         logger.error(f"Authentication database error: {exc}")
@@ -266,6 +344,7 @@ def get_user_by_id(user_id: int) -> Optional[AuthUser]:
                 is_superuser=bool(row["is_superuser"]),
                 is_staff=bool(row["is_staff"]),
                 email=row["email"] or "",
+                must_change_password=get_user_must_change_password(conn, row["id"]),
             )
     except sqlite3.Error as exc:
         logger.error(f"User lookup database error: {exc}")
@@ -282,6 +361,7 @@ def create_token(user: AuthUser, token_type: str = "access") -> str:
         "username": user.username,
         "role": user.role,
         "type": token_type,
+        "must_change_password": user.must_change_password,
         "iat": now,
         "exp": now + ttl,
     }
@@ -414,6 +494,11 @@ def require_role(required: str):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Requires '{required}' role; authenticated as '{user.role}'",
+            )
+        if user.must_change_password:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Password change required before accessing system functions. Change your password at /api/v1/auth/password",
             )
         return user
 

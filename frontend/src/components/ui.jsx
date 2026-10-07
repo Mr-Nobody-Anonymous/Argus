@@ -14,29 +14,65 @@
 import React from 'react';
 import { Box, Typography, Tooltip, CircularProgress, Skeleton } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import { C, MONO, glass } from '../theme';
+import { C, DISPLAY, MONO, glass } from '../theme';
 
-/** Blinking dot used for live/stale/offline state. */
+/** Tactical HUD corner brackets ┌ ┐ └ ┘ */
+export function HudReticle({ color = C.signal, size = 8, stroke = 1.5, opacity = 0.55 }) {
+    return (
+        <>
+            <Box sx={{ position: 'absolute', top: 0, left: 0, width: size, height: size, borderTop: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}`, opacity, pointerEvents: 'none', zIndex: 3 }} />
+            <Box sx={{ position: 'absolute', top: 0, right: 0, width: size, height: size, borderTop: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}`, opacity, pointerEvents: 'none', zIndex: 3 }} />
+            <Box sx={{ position: 'absolute', bottom: 0, left: 0, width: size, height: size, borderBottom: `${stroke}px solid ${color}`, borderLeft: `${stroke}px solid ${color}`, opacity, pointerEvents: 'none', zIndex: 3 }} />
+            <Box sx={{ position: 'absolute', bottom: 0, right: 0, width: size, height: size, borderBottom: `${stroke}px solid ${color}`, borderRight: `${stroke}px solid ${color}`, opacity, pointerEvents: 'none', zIndex: 3 }} />
+        </>
+    );
+}
+
+/** Blinking dot used for live/stale/offline state with outer radar ripple ring. */
 export function StatusDot({ color = C.ok, pulse = true, size = 8, title }) {
     const dot = (
         <Box
             component="span"
             sx={{
-                width: size,
-                height: size,
-                borderRadius: '50%',
-                background: color,
-                boxShadow: `0 0 ${size}px ${alpha(color, 0.9)}`,
-                display: 'inline-block',
+                position: 'relative',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: size + 4,
+                height: size + 4,
                 flexShrink: 0,
-                animation: pulse ? 'argus-pulse 1.8s ease-in-out infinite' : 'none',
             }}
-        />
+        >
+            {pulse && (
+                <Box
+                    component="span"
+                    sx={{
+                        position: 'absolute',
+                        width: '100%',
+                        height: '100%',
+                        borderRadius: '50%',
+                        background: color,
+                        opacity: 0.35,
+                        animation: 'argus-pulse 1.8s ease-in-out infinite',
+                    }}
+                />
+            )}
+            <Box
+                component="span"
+                sx={{
+                    width: size,
+                    height: size,
+                    borderRadius: '50%',
+                    background: color,
+                    boxShadow: `0 0 10px ${alpha(color, 0.95)}`,
+                }}
+            />
+        </Box>
     );
     return title ? <Tooltip title={title}>{dot}</Tooltip> : dot;
 }
 
-/** Monospace numeric readout. Renders an em-dash for null/undefined/NaN. */
+/** Monospace numeric readout with digital glow. Renders an em-dash for null/undefined/NaN. */
 export function Metric({ value, unit, color = C.text, size = 26, dim }) {
     const missing =
         value === null || value === undefined || value === '' ||
@@ -47,16 +83,17 @@ export function Metric({ value, unit, color = C.text, size = 26, dim }) {
                 sx={{
                     fontFamily: MONO,
                     fontSize: size,
-                    fontWeight: 700,
+                    fontWeight: 800,
                     lineHeight: 1.1,
                     color: missing ? C.textFaint : color,
                     fontVariantNumeric: 'tabular-nums',
+                    textShadow: missing ? 'none' : `0 0 16px ${alpha(color, 0.35)}`,
                 }}
             >
                 {missing ? '—' : value}
             </Typography>
             {unit && !missing && (
-                <Typography sx={{ fontFamily: MONO, fontSize: 11, color: dim || C.textFaint }}>
+                <Typography sx={{ fontFamily: MONO, fontSize: 11, color: dim || C.textFaint, letterSpacing: '0.04em' }}>
                     {unit}
                 </Typography>
             )}
@@ -73,30 +110,64 @@ export function Label({ children, sx }) {
     );
 }
 
-/**
- * Framed panel. `accent` tints the top hairline so a panel can carry severity
- * without repainting its whole surface.
- */
-export function Panel({ title, subtitle, right, accent = C.signal, children, sx, dense, ...rest }) {
+/** Threat Level badge in military DEFCON format. */
+export function ThreatBadge({ level = 'NOMINAL', defcon = 4 }) {
+    const isCritical = defcon === 1;
+    const isElevated = defcon === 2 || defcon === 3;
+    const color = isCritical ? C.critical : isElevated ? C.warn : C.ok;
     return (
         <Box
             sx={{
-                ...glass(),
-                borderRadius: 2.5,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0.85,
+                px: 1.25,
+                py: 0.4,
+                borderRadius: 1,
+                background: alpha(color, 0.12),
+                border: `1px solid ${alpha(color, 0.4)}`,
+                boxShadow: `0 0 12px ${alpha(color, 0.18)}`,
+            }}
+        >
+            <StatusDot color={color} size={6} pulse={isCritical || isElevated} />
+            <Typography sx={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color }}>
+                DEFCON {defcon} // {level}
+            </Typography>
+        </Box>
+    );
+}
+
+/**
+ * Framed panel with cybernetic glass, glowing top hairline, and optional HUD corner reticles.
+ */
+export function Panel({ title, subtitle, right, accent = C.signal, children, sx, dense, hudCorners = true, ...rest }) {
+    return (
+        <Box
+            sx={{
+                ...glass(0.78, accent),
+                borderRadius: 2,
                 position: 'relative',
                 overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
+                transition: 'border-color 0.25s ease, box-shadow 0.25s ease',
+                '&:hover': {
+                    borderColor: alpha(accent, 0.45),
+                    boxShadow: `0 8px 30px rgba(0, 0, 0, 0.5), 0 0 20px ${alpha(accent, 0.12)}`,
+                },
                 '&::before': {
                     content: '""',
                     position: 'absolute',
-                    top: 0, left: 0, right: 0, height: '1px',
-                    background: `linear-gradient(90deg, transparent, ${alpha(accent, 0.85)}, transparent)`,
+                    top: 0, left: 0, right: 0, height: '1.5px',
+                    background: `linear-gradient(90deg, transparent, ${accent}, transparent)`,
+                    boxShadow: `0 0 8px ${accent}`,
+                    zIndex: 2,
                 },
                 ...sx,
             }}
             {...rest}
         >
+            {hudCorners && <HudReticle color={accent} size={9} stroke={1.5} opacity={0.6} />}
             {(title || right) && (
                 <Box
                     sx={{
@@ -105,15 +176,17 @@ export function Panel({ title, subtitle, right, accent = C.signal, children, sx,
                         justifyContent: 'space-between',
                         gap: 1,
                         px: dense ? 1.5 : 2,
-                        py: dense ? 1 : 1.5,
+                        py: dense ? 1 : 1.25,
                         borderBottom: `1px solid ${C.line}`,
+                        background: alpha(C.void, 0.4),
                         flexShrink: 0,
+                        zIndex: 1,
                     }}
                 >
                     <Box sx={{ minWidth: 0 }}>
-                        {title && <Label>{title}</Label>}
+                        {title && <Label sx={{ letterSpacing: '0.14em' }}>{title}</Label>}
                         {subtitle && (
-                            <Typography sx={{ fontSize: 12, color: C.textDim, mt: 0.25 }} noWrap>
+                            <Typography sx={{ fontSize: 11.5, color: C.textDim, mt: 0.15 }} noWrap>
                                 {subtitle}
                             </Typography>
                         )}
@@ -121,7 +194,7 @@ export function Panel({ title, subtitle, right, accent = C.signal, children, sx,
                     {right}
                 </Box>
             )}
-            <Box sx={{ p: dense ? 1.5 : 2, flex: 1, minHeight: 0 }}>{children}</Box>
+            <Box sx={{ p: dense ? 1.5 : 2, flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>{children}</Box>
         </Box>
     );
 }

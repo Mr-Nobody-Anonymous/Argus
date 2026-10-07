@@ -17,6 +17,7 @@ record that a real NTCIP bridge could consume.
 """
 import threading
 import time
+from collections import deque
 from typing import Dict, Optional
 
 PHASES = ("NS", "EW")
@@ -52,12 +53,45 @@ class SignalOptimizer:
         self.command_log: list = []
         self.recommendations_applied = 0
 
+        # ── Signal-performance analytics ────────────────────────────
+        # Every state transition is recorded so an engineer can answer:
+        # "what did the signal actually do between 14:00 and 15:00?"
+        self.phase_history: deque = deque(maxlen=2000)
+        self.max_outs = 0               # greens that hit MAX_GREEN_S
+        self.gap_outs = 0               # greens terminated early by demand
+        self.detector_calls: Dict[str, int] = {}   # approach -> calls
+        self.cycle_lengths_s: deque = deque(maxlen=200)
+        self._cycle_started_at = time.time()
+        self._last_ns_green_start = time.time()    # offset reference
+        # Commanded-vs-observed reconciliation (fed by NTCIP polling).
+        self.observed_phase: Optional[str] = None
+        self.observed_state: Optional[str] = None
+        self.observed_disagreements = 0
+
     # ── Core state machine ──────────────────────────────────────────────
 
     def _enter(self, phase: str, state: str):
+        now = time.time()
+        # Close out the previous interval in the performance history.
+        if getattr(self, "phase_history", None) is not None and \
+                hasattr(self, "phase"):
+            self.phase_history.append({
+                "phase": self.phase,
+                "state": self.state,
+                "started_at": round(self._state_started, 3),
+                "ended_at": round(now, 3),
+                "duration_s": round(now - self._state_started, 2),
+            })
+            if self.state == "green" and phase != self.phase:
+                # A green just ended with a phase change: one half-cycle.
+                self.cycle_lengths_s.append(round(
+                    now - self._cycle_started_at, 2))
+                self._cycle_started_at = now
+                if self.phase == "NS":
+                    self._last_ns_green_start = now
         self.phase = phase
         self.state = state
-        self._state_started = time.time()
+        self._state_started = now
 
     def _advance(self, demand: Optional[Dict[str, float]]):
         """Progress the phase machine one tick."""
@@ -79,10 +113,12 @@ class SignalOptimizer:
                 # clearly needs service.
                 cur_demand = demand.get(
                     "north" if self.phase == "NS" else "east", 0)
-                if elapsed >= MAX_GREEN_S or (
-                    elapsed >= MIN_GREEN_S and cur_demand < 0.5
-                    and demand and max(demand.values()) > cur_demand * 2
-                ):
+                if elapsed >= MAX_GREEN_S:
+                    self.max_outs += 1
+                    self._enter(self.phase, "yellow")
+                elif (elapsed >= MIN_GREEN_S and cur_demand < 0.5
+                      and demand and max(demand.values()) > cur_demand * 2):
+                    self.gap_outs += 1
                     self._enter(self.phase, "yellow")
 
     @staticmethod
@@ -237,3 +273,77 @@ class SignalOptimizer:
             cmds = list(self.command_log)[-limit:]
             cmds.reverse()
             return cmds
+
+    # ── Signal-performance analytics ────────────────────────────────────
+
+    def record_detector_call(self, approach: str):
+        """A vehicle/pedestrian detection registered a call on an approach."""
+        with self._lock:
+            self.detector_calls[approach] = \
+                self.detector_calls.get(approach, 0) + 1
+
+    def set_observed(self, phase: Optional[str], state: Optional[str]):
+        """Reconcile against what the real controller reports (NTCIP poll)."""
+        with self._lock:
+            if phase is None or state is None:
+                return
+            if self.observed_phase is not None and (
+                    phase != self.phase or state != self.state):
+                self.observed_disagreements += 1
+            self.observed_phase = phase
+            self.observed_state = state
+
+    def performance(self) -> Dict:
+        """Cycle/split/offset statistics from the recorded phase history."""
+        with self._lock:
+            durations: Dict[tuple, list] = {}
+            for rec in self.phase_history:
+                key = (rec["phase"], rec["state"])
+                durations.setdefault(key, []).append(rec["duration_s"])
+
+            def avg(key):
+                vals = durations.get(key, [])
+                return round(sum(vals) / len(vals), 1) if vals else None
+
+            ns_green = avg(("NS", "green")) or 0.0
+            ew_green = avg(("EW", "green")) or 0.0
+            total_green = ns_green + ew_green
+            splits = None
+            if total_green > 0:
+                splits = {
+                    "NS_pct": round(ns_green / total_green * 100.0, 1),
+                    "EW_pct": round(ew_green / total_green * 100.0, 1),
+                }
+            cycles = sorted(self.cycle_lengths_s)
+            return {
+                "intervals_recorded": len(self.phase_history),
+                "avg_cycle_length_s": (
+                    round(sum(cycles) / len(cycles), 1) if cycles else None),
+                "min_cycle_length_s": round(cycles[0], 1) if cycles else None,
+                "max_cycle_length_s": round(cycles[-1], 1) if cycles else None,
+                "avg_green_s": {"NS": avg(("NS", "green")),
+                                "EW": avg(("EW", "green"))},
+                "avg_yellow_s": {"NS": avg(("NS", "yellow")),
+                                 "EW": avg(("EW", "yellow"))},
+                "avg_all_red_s": {"NS": avg(("NS", "all_red")),
+                                  "EW": avg(("EW", "all_red"))},
+                "splits_pct": splits,
+                "offset_reference": {
+                    "note": "seconds since last NS green start",
+                    "seconds_since_ns_green": round(
+                        time.time() - self._last_ns_green_start, 1),
+                },
+                "max_outs": self.max_outs,
+                "gap_outs": self.gap_outs,
+                "detector_calls": dict(self.detector_calls),
+                "observed_disagreements": self.observed_disagreements,
+                "observed_phase": self.observed_phase,
+                "observed_state": self.observed_state,
+            }
+
+    def recent_intervals(self, limit: int = 50) -> list:
+        """The most recent phase intervals, newest first."""
+        with self._lock:
+            out = list(self.phase_history)[-limit:]
+        out.reverse()
+        return out

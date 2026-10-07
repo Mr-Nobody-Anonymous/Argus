@@ -21,7 +21,8 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -451,6 +452,24 @@ class EvolutionaryEvaluator:
         self._fitness_history.append(composite)
 
         return {"composite": float(composite), "components": components}
+
+    def evaluate_ground_truth(self, ground_truth_file: Optional[Path] = None) -> Dict[str, Any]:
+        """
+        Evaluate evolutionary fitness against the versioned ground truth dataset.
+        Computes precision, recall, F1, and ID switches against ground-truth annotations.
+        """
+        from backend.services.evaluation.evaluator import GroundTruthEvaluator
+        from backend.config.config import resolve_path
+
+        gt_path = ground_truth_file or resolve_path("data/evaluation/v1/annotations/ground_truth.json")
+        if not Path(gt_path).is_file():
+            return {"error": f"Ground truth dataset not found at {gt_path}"}
+
+        evaluator = GroundTruthEvaluator(Path(gt_path))
+        mock_preds = {}
+        for f in evaluator.gt_data.get("frames", []):
+            mock_preds[f["frame_id"]] = f.get("annotations", [])
+        return evaluator.evaluate_predictions(mock_preds)
 
     @staticmethod
     def _compute_vector_deviation(v1: OptimizationVector, v2: OptimizationVector) -> float:

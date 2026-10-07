@@ -1,5 +1,5 @@
 {
-  "clip": "/home/user/Argus/data/demo_clip.mp4",
+  "clip": "data/demo_clip.mp4",
   "frames": 40,
   "results": [
     {

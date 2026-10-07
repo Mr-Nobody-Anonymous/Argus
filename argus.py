@@ -626,7 +626,7 @@ def cmd_start(args) -> int:
     print(_c("1;32", "  Argus is running"))
     print(f"    Dashboard   {url}" + ("" if ui_built else "   (not built - API only)"))
     print(f"    API docs    {url}/docs")
-    print(f"    Login       admin / admin123")
+    print(f"    Login       admin (set with: python argus.py create-admin)")
     print()
     print(f"    Stop it     python argus.py stop")
     print()
@@ -782,6 +782,81 @@ def cmd_reset(args) -> int:
     return 0
 
 
+# ── create-admin ─────────────────────────────────────────────────────────────
+
+def cmd_create_admin(args) -> int:
+    print(_c("1;36", "\n  Argus - Admin User Setup\n"))
+    py = ensure_venv()
+    env = os.environ.copy()
+    env.update(load_env_file())
+    env["PYTHONPATH"] = str(ROOT)
+
+    username = args.username or "admin"
+    password = os.environ.get("ARGUS_ADMIN_PASSWORD", env.get("ARGUS_ADMIN_PASSWORD", "")).strip()
+    if not password and not args.random:
+        import getpass
+        try:
+            p1 = getpass.getpass(f"  Enter password for '{username}': ")
+            p2 = getpass.getpass("  Confirm password: ")
+            if p1 != p2:
+                fail("Passwords do not match.")
+                return 1
+            if len(p1) < 12:
+                fail("Password must be at least 12 characters.")
+                return 1
+            password = p1
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+    elif args.random:
+        import secrets
+        password = secrets.token_urlsafe(16)
+        info(f"Generated secure password: {password}")
+
+    if not password or len(password) < 12:
+        fail("Admin password must be at least 12 characters.")
+        return 1
+
+    env["ARGUS_ADMIN_BOOTSTRAP_USERNAME"] = username
+    env["ARGUS_ADMIN_BOOTSTRAP_PASSWORD"] = password
+    env["ARGUS_ADMIN_BOOTSTRAP_MUST_CHANGE"] = "1" if args.random else "0"
+
+    code = """
+import os
+import django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "backend.django_admin.settings")
+django.setup()
+from django.contrib.auth.models import User
+from backend.api.auth import set_user_must_change_password
+username = os.environ["ARGUS_ADMIN_BOOTSTRAP_USERNAME"]
+password = os.environ["ARGUS_ADMIN_BOOTSTRAP_PASSWORD"]
+u, created = User.objects.get_or_create(
+    username=username,
+    defaults={"is_superuser": True, "is_staff": True, "email": f"{username}@argus.local"}
+)
+u.is_superuser = True
+u.is_staff = True
+u.set_password(password)
+u.save()
+set_user_must_change_password(
+    u.id, os.environ.get("ARGUS_ADMIN_BOOTSTRAP_MUST_CHANGE") == "1"
+)
+print("SUCCESS" if created else "UPDATED")
+"""
+    cmd = [str(py), "-c", code]
+    env["DJANGO_SETTINGS_MODULE"] = "backend.django_admin.settings"
+    p = run(cmd, env=env, capture=True)
+    if "SUCCESS" in (p.stdout or ""):
+        ok(f"Created superuser '{username}'")
+    elif "UPDATED" in (p.stdout or ""):
+        ok(f"Updated password for superuser '{username}'")
+    else:
+        fail(f"Failed to create/update user: {p.stderr or p.stdout}")
+        return 1
+    print()
+    return 0
+
+
 # ── cli ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -793,6 +868,7 @@ def main() -> int:
                "  python argus.py start              set up and run\n"
                "  python argus.py start --native     ignore Docker, use a virtualenv\n"
                "  python argus.py start --rebuild    force a fresh dashboard build\n"
+               "  python argus.py create-admin       create or reset admin password\n"
                "  python argus.py stop               stop everything\n"
                "  python argus.py doctor             check this machine\n",
     )
@@ -800,7 +876,7 @@ def main() -> int:
 
     s = sub.add_parser("start", help="set everything up and run it")
     s.add_argument("--port", type=int, default=None, help=f"port (default {DEFAULT_PORT})")
-    s.add_argument("--host", default="0.0.0.0", help="bind address (default 0.0.0.0)")
+    s.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; use 0.0.0.0 only on a trusted network)")
     s.add_argument("--native", action="store_true", help="force the virtualenv path")
     s.add_argument("--docker", action="store_true", help="require Docker")
     s.add_argument("--rebuild", action="store_true", help="rebuild images / dashboard")
@@ -820,6 +896,11 @@ def main() -> int:
     s = sub.add_parser("reset", help="stop and delete generated files")
     s.add_argument("--all", action="store_true", help="also delete the database")
     s.set_defaults(func=cmd_reset)
+
+    s = sub.add_parser("create-admin", help="create or update admin user credentials")
+    s.add_argument("--username", default="admin", help="username (default: admin)")
+    s.add_argument("--random", action="store_true", help="generate a secure random password")
+    s.set_defaults(func=cmd_create_admin)
 
     args = p.parse_args()
     if not getattr(args, "func", None):

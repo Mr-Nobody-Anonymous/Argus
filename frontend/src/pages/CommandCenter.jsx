@@ -75,20 +75,22 @@ function usePoll(fn, deps = [], interval = POLL_MS) {
 
 function StatCard({ icon, label, value, unit, color = C.signal, hint, sub }) {
     return (
-        <Panel dense accent={color} sx={{ height: '100%' }}>
+        <Panel dense accent={color} sx={{ height: '100%', transition: 'all 0.2s ease', '&:hover': { transform: 'translateY(-1px)' } }}>
             <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.25 }}>
                 <Box sx={{
-                    width: 34, height: 34, borderRadius: 1.5, flexShrink: 0,
+                    width: 36, height: 36, borderRadius: 1.5, flexShrink: 0,
                     display: 'grid', placeItems: 'center',
-                    background: alpha(color, 0.1), border: `1px solid ${alpha(color, 0.25)}`,
+                    background: `radial-gradient(circle, ${alpha(color, 0.25)} 0%, ${alpha(color, 0.05)} 100%)`,
+                    border: `1px solid ${alpha(color, 0.45)}`,
+                    boxShadow: `0 0 12px ${alpha(color, 0.2)}`,
                 }}>
-                    {React.cloneElement(icon, { sx: { fontSize: 17, color } })}
+                    {React.cloneElement(icon, { sx: { fontSize: 19, color, filter: `drop-shadow(0 0 4px ${color})` } })}
                 </Box>
                 <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Tooltip title={hint || ''}>
                         <Box>
-                            <Label sx={{ mb: 0.25 }}>{label}</Label>
-                            <Metric value={value} unit={unit} color={color} size={22} />
+                            <Label sx={{ mb: 0.25, letterSpacing: '0.12em' }}>{label}</Label>
+                            <Metric value={value} unit={unit} color={color} size={24} />
                             {sub && (
                                 <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textFaint, mt: 0.25 }} noWrap>
                                     {sub}
@@ -111,18 +113,24 @@ function AlertRow({ event, isNew }) {
 
     return (
         <Box sx={{
-            px: 1.25, py: 1, borderRadius: 1.5,
-            border: `1px solid ${alpha(color, 0.22)}`,
-            background: alpha(color, 0.05),
+            px: 1.4, py: 1.1, borderRadius: 1.5,
+            border: `1px solid ${alpha(color, 0.35)}`,
+            borderLeft: `3px solid ${color}`,
+            background: `linear-gradient(90deg, ${alpha(color, 0.12)} 0%, ${alpha(color, 0.02)} 100%)`,
+            boxShadow: isNew ? `0 0 16px ${alpha(color, 0.35)}` : 'none',
             animation: isNew ? 'argus-flash 1.4s ease-out' : 'none',
-            transition: 'background .2s',
-            '&:hover': { background: alpha(color, 0.11) },
+            transition: 'all .2s ease',
+            '&:hover': {
+                background: alpha(color, 0.15),
+                borderColor: color,
+                transform: 'translateX(2px)',
+            },
         }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.4 }}>
-                <StatusDot color={color} pulse={false} size={6} />
+                <StatusDot color={color} pulse={isNew} size={6} />
                 <Typography sx={{
-                    fontFamily: MONO, fontSize: 11, fontWeight: 700,
-                    color, textTransform: 'uppercase', letterSpacing: '0.04em',
+                    fontFamily: MONO, fontSize: 11, fontWeight: 800,
+                    color, textTransform: 'uppercase', letterSpacing: '0.06em',
                 }} noWrap>
                     {String(event.rule_type || 'event').replace(/_/g, ' ')}
                 </Typography>
@@ -130,16 +138,17 @@ function AlertRow({ event, isNew }) {
                 <Tag label={event.status || 'detected'} color={statusColor(event.status)} />
                 <TimeAgo ts={event.timestamp} />
             </Box>
-            <Typography sx={{ fontSize: 11.5, color: C.textDim, lineHeight: 1.45 }} noWrap>
+            <Typography sx={{ fontSize: 11.5, color: C.text, lineHeight: 1.45, fontWeight: 500 }} noWrap>
                 {meta.summary || `${event.object_type || 'object'} on camera ${event.camera_id}`}
             </Typography>
             {evidence.length > 0 && (
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.4, mt: 0.6 }}>
                     {evidence.slice(0, 3).map((e, i) => (
                         <Typography key={i} sx={{
-                            fontFamily: MONO, fontSize: 9.5, color: C.textFaint,
-                            px: 0.5, py: 0.15, borderRadius: 0.5,
+                            fontFamily: MONO, fontSize: 9.5, color: C.textDim,
+                            px: 0.6, py: 0.15, borderRadius: 0.5,
                             border: `1px solid ${C.line}`,
+                            bgcolor: alpha(C.void, 0.5),
                         }}>
                             {String(e)}
                         </Typography>

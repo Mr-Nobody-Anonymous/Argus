@@ -75,10 +75,9 @@ python backend/scripts/init_db.py
 python backend/scripts/run_admin.py --setup-only
 
 # ARGUS_ADMIN_PASSWORD sets the first admin password from the platform's secret
-# store. It is applied only when the account still has its default password, so
-# a later manual change is never silently reverted on redeploy.
+# store. Applied if specified to set or update the administrator credentials.
 if [ -n "${ARGUS_ADMIN_PASSWORD:-}" ]; then
-    python - <<'PYBOOTSTRAP' || echo "WARNING: admin password bootstrap failed; the default remains in effect."
+    python - <<'PYBOOTSTRAP' || echo "WARNING: admin password bootstrap failed."
 import os
 import django
 
@@ -90,14 +89,12 @@ username = os.environ.get("ARGUS_ADMIN_USERNAME", "admin")
 password = os.environ["ARGUS_ADMIN_PASSWORD"]
 user = User.objects.filter(username=username).first()
 if user is None:
-    User.objects.create_superuser(username=username, email="", password=password)
+    User.objects.create_superuser(username=username, email=f"{username}@argus.local", password=password)
     print(f"Created admin user '{username}' from ARGUS_ADMIN_PASSWORD.")
-elif user.check_password("admin123"):
+else:
     user.set_password(password)
     user.save(update_fields=["password"])
-    print(f"Replaced the default password for '{username}' from ARGUS_ADMIN_PASSWORD.")
-else:
-    print(f"Admin '{username}' already has a non-default password; left unchanged.")
+    print(f"Configured password for admin '{username}' from ARGUS_ADMIN_PASSWORD.")
 PYBOOTSTRAP
 fi
 

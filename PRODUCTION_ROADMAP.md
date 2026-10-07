@@ -8,6 +8,8 @@ Every claim below was verified against the code on 2026-08-17, not against the
 README. Where the review's assumption differed from reality, the actual finding
 is recorded. Nothing here is marked done unless it was executed and observed.
 
+Status update (2026-10-07): CI and security workflows are now configured, biometric embeddings are encrypted, and face recognition is opt-in. The latest pushed workflow result is the source of truth for current test status; no green run is claimed here.
+
 ---
 
 ## 0. How to read this
@@ -130,46 +132,36 @@ Correction to the review: retention is **not** entirely missing.
 `EventStore.delete_old_events(retention_days=30)` exists and works, and
 `config.system.snapshot_retention_days = 30` is defined.
 
-What is missing is that nothing ever *calls* it, and biometric data has no
-policy at all.
+Retention and biometric safeguards are partially implemented. AES-GCM embeddings are written for new enrollments, and legacy plaintext embeddings migrate when face recognition is explicitly enabled. New source face crops are not saved. Legacy crop files are not removed automatically and need operator-reviewed cleanup before enabling recognition.
 
 | Task | Effort |
 |---|---|
 | Scheduled retention job invoking the existing purge on a timer | S |
 | Per-class retention: video / snapshots / events / embeddings / LPR / tracks | M |
 | Subject-deletion endpoints (`DELETE /faces/{id}` exists; add plates, tracks, purge) | M |
-| Encrypt biometric embeddings at rest; stop storing source face images | M |
+| Encrypt/migrate legacy embeddings; stop writing new source images; document cleanup for legacy crops | M |
 | Written privacy/retention policy in the repo | S |
 
-### 2.4 Transport security — **not started**
+### 2.4 Transport security — **reference configurations present; deployment still needs verification**
 
-TLS everywhere; secure cookie flags; strict CORS in production (the dev
-allowlist + `allow_origin_regex` currently in `main.py` is intentionally
-permissive for the sandbox preview and **must not** ship as-is). `S–M`
+The local launcher and development Compose ports bind to loopback by default. Caddy and Nginx reverse-proxy examples are included. Public deployments still need a real domain, TLS validation, and a review of proxy trust and CORS settings before exposure.
 
 ### 2.5 Audit trail — **done**
 
-No `audit_log` table exists. Required for a surveillance product: who changed
-which zone/rule/identity/permission, when, from what, to what.
-Note `django_admin_log` already captures admin-panel edits — extend that concept
-to the API rather than inventing a second scheme. `M`
+The API audit log and hash-chain integrity check are present. Review every privileged mutation path and confirm failures are handled without losing the primary operation or silently omitting security events.
 
-### 2.6 Automated integration tests — **done (44 tests green)**
+### 2.6 Automated integration tests — **CI configured; latest result pending**
 
-7 test scripts exist and pytest 9.0.3 is installed, but the suite is a set of
-ad-hoc scripts, several of which hide real breakage behind unreachable
-graceful-degradation fallbacks. None of them would have caught any of the nine
-pipeline defects in §1.
+The repository has maintained pytest suites for pipeline regression, API
+security, CityOS, sensors, and security hardening. The push and pull-request
+workflow runs them on Python 3.11 and 3.13 and also builds the frontend and
+starts the API for a smoke check. Do not describe the current tree as passing
+until the latest GitHub Actions run is green.
 
-| Task | Effort |
+| Remaining verification | Effort |
 |---|---|
-| Convert to real pytest with assertions and fixtures | M |
-| **Golden-frame regression test**: fixed image → asserted detection count/classes | S |
-| **Tracker identity test**: N frames → assert IDs persist (catches the Kalman class of bug) | S |
-| **Non-empty-output test**: assert detections ≠ 0 under throttle (catches the broker bug) | S |
-| Failure injection: camera drop, MQTT down, DB locked, GPU OOM, WS disconnect | L |
-
----
+| Confirm the first pushed CI run is green on both Python versions | S |
+| Add failure-injection coverage for camera drop, MQTT down, DB locked, GPU OOM, and WebSocket disconnect | L |
 
 ## 3. P1 — Operational maturity
 
@@ -297,7 +289,7 @@ fallback. Before any security use: quality gate → liveness → embedding → m
 
 | # | Item | Finding | Effort |
 |---|---|---|---|
-| 4.1 | CI/CD | **No `.github/` at all.** Add lint, type-check, pytest, Docker build, Trivy scan | M |
+| 4.1 | CI/CD | GitHub Actions workflows now cover tests, frontend build, dependency/static scans, and Docker build checks. Confirm the latest pushed runs are green; add release publishing only when maintainers are ready to support it | M |
 | 4.2 | Config schema validation | Pydantic models exist; add a fail-fast `argus config validate` with actionable messages | S |
 | 4.3 | Plugin SDK | Agents already follow a common shape — formalise `VisionAgent` so new detectors need no core edits | M |
 | 4.4 | Event taxonomy | Namespaced types (`SECURITY.INTRUSION`, `SAFETY.FALL`, `SYSTEM.CAMERA_OFFLINE`) | S |
@@ -342,9 +334,7 @@ carry mutable state that biased the first in-process attempt.
 | Linear baseline | 1.27 | 784.20 | 840.84 | 12.8 | 0 | 98.7 |
 | Swarm | 1.61 | 612.78 | 750.53 | 12.8 | 0 | 98.7 |
 
-**+26.8% FPS, -21.9% p50 latency, identical detection count.** The swarm earns
-its place: it defers optional enrichment (face, LPR) under load while the
-detector keeps running on every frame.
+**In the single recorded 40-frame CPU run:** +26.8% FPS and -21.9% p50 latency, with the same mean detection count. No ground-truth labels or hardware metadata were recorded, so this does not establish equal accuracy or a general speedup.
 
 Reproduce: `python3 tests/swarm_benchmark.py --frames 40 --json docs/swarm_benchmark_results.json`
 
@@ -453,11 +443,11 @@ Known limitations to state plainly today:
 |---|---|---|---|---|
 | Feature completeness | 8/10 | 8/10 | 8/10 | Breadth is real and running |
 | Architecture ambition | 9/10 | 9/10 | 9/10 | Confirmed |
-| Prototype quality | 8/10 potential | 7/10 | 8/10 | 13 silent-wrong-output bugs found and fixed; 44 tests guard them |
-| Production readiness | ~5/10 | 4/10 | 6.5/10 | Auth, RBAC, audit, retention, metrics landed; TLS/Postgres/CI outstanding |
-| Security & privacy | ~3/10 | 2.5/10 | 6.5/10 | JWT+RBAC on 38 routes, audit trail, retention, no plaintext secrets; biometric encryption and TLS outstanding |
+| Prototype quality | Reassess | Reassess | Reassess | Regression and security suites are configured in CI; current pass status belongs to the latest workflow run. |
+| Production readiness | ~5/10 | 4/10 | Reassess after deployment review | Auth, RBAC, audit, retention, Postgres support, CI workflows, and reverse-proxy examples exist; production hardening still needs real deployment validation |
+| Security & privacy | ~3/10 | 2.5/10 | Reassess after data migration review | JWT+RBAC, audit trail, retention, encrypted embeddings, opt-in face recognition, and TLS proxy examples exist; old plaintext face crops require operator cleanup |
 | Observability | ~4/10 | 3.5/10 | 7/10 | Prometheus exposition + JSON logs; no tracing yet |
-| ML experimentation | 9/10 | 9/10 | 9/10 | Now *measured* (§5) — swarm shown to be +26.8% FPS at equal quality |
+| ML experimentation | Reassess | Reassess | Reassess | One 40-frame CPU A/B result is recorded; no labeled evaluation set or hardware metadata is published, and detection counts are not accuracy. |
 
 The review's conclusion holds: the missing piece is **the platform engineering
 layer around the models**, not another model. The one adjustment this audit

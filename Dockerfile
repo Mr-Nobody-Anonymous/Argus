@@ -8,7 +8,7 @@
 # App Runner) can run this image directly.
 #
 # Build:  docker build -t argus .
-# Run:    docker run -p 8000:8000 -e ARGUS_JWT_SECRET=... -v argus-data:/app/data argus
+# Run:    docker run -p 127.0.0.1:8000:8000 -e ARGUS_JWT_SECRET=... -v argus-data:/app/data argus
 #
 # docker/Dockerfile.backend and docker/Dockerfile.frontend remain for the
 # two-container development compose setup.

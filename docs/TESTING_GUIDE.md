@@ -2,19 +2,15 @@
 
 ## The suites that gate correctness
 
-These are the tests that must pass. They run offline, need no external
-infrastructure, and are wired into no CI system yet (see
-[PRODUCTION_ROADMAP.md](../PRODUCTION_ROADMAP.md) §4).
+The maintained pytest suites run in GitHub Actions on pushes and pull requests, alongside the frontend build and server smoke checks. Use the latest Actions run for current pass status.
 
 ```bash
-pytest tests/test_regression.py tests/test_api_security.py -v
-# 44 passed
+pytest -q
 ```
 
-| Suite | Tests | Covers |
+| Suite group | Test modules | Covers |
 |---|---|---|
-| `tests/test_regression.py` | 23 | Kalman filter shape/transition correctness, greedy IoU matching, track identity at realistic frame rates, primary-detector starvation, skipped-frame semantics, event deduplication |
-| `tests/test_api_security.py` | 21 | Route coverage sweep, token forgery/expiry/replay, privilege escalation, plaintext secrets in config |
+| Maintained pytest suites | tests/test_*.py | Pipeline regression, API authentication, security hardening, CityOS, and sensor behavior. pytest.ini defines collection; current results are in GitHub Actions. |
 
 ### Why these tests are trustworthy
 
@@ -55,16 +51,14 @@ vectors) carry mutable state, and running both variants in one process biased
 the first benchmark badly enough to invert its conclusion. Do not "simplify"
 the harness back to in-process execution.
 
-Latest result (40 frames, 640×480, CPU):
+One recorded result (40 frames, 640×480, CPU; hardware metadata was not captured):
 
 | Mode | FPS | p50 ms | p95 ms | Det/frame |
 |---|---|---|---|---|
 | linear | 1.27 | 784.20 | 840.84 | 12.8 |
 | swarm | 1.61 | 612.78 | 750.53 | 12.8 |
 
-**Always read the detection column next to the FPS column.** The first run of
-this benchmark reported +45.2% FPS and −35.5% detections; the "speedup" was the
-detector being starved into replaying a stale result.
+**Read detection counts beside FPS.** Counts are a regression signal, not an accuracy measure: this benchmark has no ground-truth labels. The first run reported +45.2% FPS and −35.5% detections because the detector replayed stale output.
 
 ---
 

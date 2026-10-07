@@ -60,8 +60,9 @@ enhancement:
   hdr: false
 
 # Face Recognition Configuration
+# Facial identification is opt-in; review consent, retention, and applicable rules before enabling.
 face_recognition:
-  enabled: true
+  enabled: false
   confidence_threshold: 0.6
   model_path: models/face_recognition
   max_faces_per_frame: 10

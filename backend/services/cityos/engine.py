@@ -22,13 +22,21 @@ import time
 from collections import deque
 from typing import Dict, List, Optional
 
+from backend.services.cityos.bike_analytics import BikeAnalytics
 from backend.services.cityos.calibration import CameraCalibration
 from backend.services.cityos.corridor import CorridorLink, CorridorService
+from backend.services.cityos.incident_detection import IncidentDetector
 from backend.services.cityos.intersection_map import IntersectionMap
+from backend.services.cityos.ntcip import NTCIPControllerClient
 from backend.services.cityos.perception_engine import PerceptionEngine
 from backend.services.cityos.safety_analytics import SafetyAnalytics
-from backend.services.cityos.traffic_flow import TrafficFlowAnalyzer
+from backend.services.cityos.sensor_abstraction import (
+    LidarPoint, SensorFrame, SensorPose, SensorRegistry,
+    cluster_point_cloud,
+)
+from backend.services.cityos.sensor_fusion import Observation, SensorFusion
 from backend.services.cityos.signal_optimizer import SignalOptimizer
+from backend.services.cityos.traffic_flow import TrafficFlowAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +72,27 @@ class Intersection:
 
         # Deterministic replay buffer: bounded twin snapshots.
         self.replay: deque = deque(maxlen=REPLAY_MAX)
+
+        # ── Layers below perception ─────────────────────────────────
+        # Physical sensors (4D LiDAR etc.) + multi-sensor world model.
+        self.sensors = SensorRegistry()
+        self.fusion = SensorFusion()
+        self._lidar_observations: deque = deque(maxlen=64)   # (ts, obs)
+
+        # ── Layers beside perception ────────────────────────────────
+        self.bikes = BikeAnalytics(intersection_id)
+        self.incidents = IncidentDetector(intersection_id)
+        # NTCIP controller client: SIMULATION by default - no physical
+        # device is ever actuated unless an operator explicitly opts in.
+        self.controller = NTCIPControllerClient(intersection_id)
+
+        # ── Privacy governance ──────────────────────────────────────
+        self.retention_policy = {
+            "completed_trips_s": 900.0,
+            "corridor_matches_s": 900.0,
+            "replay_snapshots_s": 1800.0,
+        }
+        self.governance_audit: deque = deque(maxlen=200)
 
     # ── Ingest ──────────────────────────────────────────────────────────
 
@@ -101,12 +130,56 @@ class Intersection:
             self.flow.observe(users)
             self.flow.observe_queue(users)
             self.safety.process(self.perception, self.signal.approach_state)
+
+            # Multi-sensor fusion: camera tracks (world coords) + recent
+            # 4D-LiDAR cluster observations -> one world model.
+            camera_obs = [
+                Observation(
+                    source="camera",
+                    east_m=u["world"]["east_m"],
+                    north_m=u["world"]["north_m"],
+                    speed_mps=u.get("speed_mps", 0.0),
+                    confidence=u.get("confidence", 0.8),
+                    track_key=str(u["track_id"]),
+                )
+                for u in users
+            ]
+            lidar_obs = [
+                Observation(
+                    source="lidar",
+                    east_m=o["east_m"], north_m=o["north_m"],
+                    speed_mps=o.get("speed_mps", 0.0),
+                    heading_deg=o.get("heading_deg"),
+                    confidence=0.85,
+                )
+                for ts, obs in self._lidar_observations
+                if now - ts < 2.0
+                for o in obs
+            ]
+            self.fusion.update(camera_obs + lidar_obs)
+
+            # Cyclist-specific analytics.
+            self.bikes.process(users)
+
             demand = self.flow.demand_by_approach(users)
+            for approach, weight in demand.items():
+                if weight >= 1.0:
+                    self.signal.record_detector_call(approach)
             self.signal.tick(demand)
             if self.signal.mode == "adaptive" and demand:
                 rec = self.signal.recommend(demand)
                 if rec.get("action") in ("extend", "terminate_early"):
                     self.signal.apply_recommendation(rec)
+
+            # NTCIP controller reconciliation: poll the (simulated or real)
+            # controller and compare against the commanded phase/state.
+            poll = self.controller.poll(self.signal.phase, self.signal.state)
+            if poll.get("ok"):
+                self.signal.set_observed(poll.get("observed_phase"),
+                                         poll.get("observed_state"))
+
+            # Operational incidents from perception + queue state.
+            self.incidents.process(users, self.flow.queue_status())
 
         if now - self._last_replay_at >= REPLAY_INTERVAL_S:
             self._last_replay_at = now
@@ -116,6 +189,57 @@ class Intersection:
 
     def attach_corridor(self, corridor: CorridorService):
         self.corridor = corridor
+
+    # ── Sensor-layer ingest (below perception) ──────────────────────────
+
+    def register_sensor(self, sensor_id: str, sensor_type: str,
+                        pose: Optional[Dict] = None,
+                        label: str = "") -> Dict:
+        """Register a physical sensor (4D LiDAR, radar, ...) on this node."""
+        sensor_pose = SensorPose.from_dict(pose) if pose else None
+        sensor = self.sensors.register(sensor_id, sensor_type,
+                                       pose=sensor_pose, label=label)
+        return sensor.to_dict()
+
+    def ingest_lidar(self, sensor_id: str, points: List[Dict],
+                     timestamp: Optional[float] = None,
+                     sequence: int = 0, expected_packets: int = 0,
+                     received_packets: int = 0) -> Dict:
+        """Ingest one 4D LiDAR frame: per-point x/y/z, radial velocity,
+        intensity, return index.
+
+        Points are sensor-local (forward/left/up metres); they are posed
+        into world coordinates, clustered into candidate objects, and fed
+        to the fusion layer alongside camera tracks. The camera detector is
+        NOT assumed to be the source of truth.
+        """
+        timestamp = timestamp if timestamp is not None else time.time()
+        sensor = self.sensors.get(sensor_id)
+        if sensor is None:
+            sensor = self.sensors.register(sensor_id, "lidar")
+        frame = SensorFrame(
+            sensor_id=sensor_id, sensor_type="lidar",
+            timestamp=timestamp,
+            points=[LidarPoint(
+                p.get("x", 0.0), p.get("y", 0.0), p.get("z", 0.0),
+                radial_velocity=p.get("radial_velocity", 0.0),
+                intensity=p.get("intensity", 0.0),
+                return_index=p.get("return_index", 0),
+            ) for p in points],
+            sequence=sequence,
+            expected_packets=expected_packets,
+            received_packets=received_packets,
+        )
+        self.sensors.record_frame(frame)
+        observations = cluster_point_cloud(frame.points, sensor.pose)
+        if observations:
+            self._lidar_observations.append((time.time(), observations))
+        return {
+            "sensor_id": sensor_id,
+            "points_received": len(points),
+            "clusters": len(observations),
+            "observations": observations,
+        }
 
     def drain_trips(self):
         """Move completed trajectories into turning movements + corridors."""
@@ -160,6 +284,9 @@ class Intersection:
             "frames_total": self.frames_ingested,
             "ingest_latency_ms": self.ingest_latency_ms,
             "calibration_source": self.calibration.source,
+            # Deep per-sensor diagnostics (4D LiDAR etc.).
+            "sensor_registry": self.sensors.health_summary(),
+            "fusion_stats": self.fusion.stats_dict(),
         }
 
     # ── Snapshots ───────────────────────────────────────────────────────
@@ -184,6 +311,61 @@ class Intersection:
             "signal": {"phase": self.signal.phase, "state": self.signal.state},
             "queues": self.flow.queue_status(),
         }
+
+    def export_replay(self) -> Dict:
+        """Export the full replay buffer as a deterministic recording.
+
+        A recording can be re-imported with CityOSEngine.reconstruct() to
+        reproduce exactly what the twin believed at any recorded instant -
+        e.g. for debugging a safety algorithm against August 24, 14:32:17.
+        """
+        return {
+            "format_version": 1,
+            "intersection_id": self.id,
+            "label": self.label,
+            "exported_at": round(time.time(), 3),
+            "snapshot_interval_s": REPLAY_INTERVAL_S,
+            "snapshots": list(self.replay),
+        }
+
+    def purge_expired_replay(self, retention_s: float) -> int:
+        """Privacy governance: drop replay snapshots older than retention."""
+        cutoff = time.time() - retention_s
+        keep = deque(maxlen=self.replay.maxlen)
+        removed = 0
+        for snap in self.replay:
+            if snap.get("timestamp", 0) >= cutoff:
+                keep.append(snap)
+            else:
+                removed += 1
+        self.replay.clear()
+        self.replay.extend(keep)
+        return removed
+
+    def governance_report(self) -> Dict:
+        """Formal privacy/data-governance posture for this intersection."""
+        return {
+            "intersection_id": self.id,
+            "data_classes": {
+                "imagery_or_biometrics": "never ingested (geometry-only)",
+                "track_ids": "ephemeral - expire on retention policy",
+                "completed_trips": f"{self.retention_policy['completed_trips_s']:.0f}s retention",
+                "corridor_matches": f"{self.retention_policy['corridor_matches_s']:.0f}s retention",
+                "replay_snapshots": f"{self.retention_policy['replay_snapshots_s']:.0f}s retention",
+            },
+            "retention_policy": dict(self.retention_policy),
+            "audit_log_entries": len(self.governance_audit),
+            "note": ("stable ids are deliberately ephemeral; exports carry "
+                     "no imagery, embeddings or plate text"),
+        }
+
+    def audit_governance(self, action: str, **fields):
+        """Append an entry to the privacy-governance audit log."""
+        self.governance_audit.append({
+            "ts": round(time.time(), 3),
+            "action": action,
+            **fields,
+        })
 
     def replay_at(self, seconds_ago: float) -> Optional[Dict]:
         """Nearest recorded snapshot to `seconds_ago` in the past."""
@@ -249,6 +431,21 @@ class Intersection:
                 **self.safety.stats(),
                 "recent_events": self.safety.recent_events(limit=20),
             },
+            # Multi-sensor world model + specialist layers.
+            "fused_objects": self.fusion.snapshot(),
+            "bikes": {
+                **self.bikes.stats(),
+                "volume_series": self.bikes.volume_series(minutes=15),
+                "speed_summary": self.bikes.speed_summary(),
+                "queue_by_approach": self.bikes.queue_status(users),
+                "recent_events": self.bikes.recent_events(limit=10),
+            },
+            "incidents": {
+                **self.incidents.stats(),
+                "recent_incidents": self.incidents.recent_incidents(limit=10),
+            },
+            "controller": self.controller.status(),
+            "signal_performance": self.signal.performance(),
             "perception_stats": self.perception.stats(),
             "sensor_health": self.sensor_health(),
             "edge_node": {
@@ -395,6 +592,71 @@ class CityOSEngine:
 
     def summaries(self) -> List[Dict]:
         return [i.summary() for i in self.list_intersections()]
+
+    def ingest_lidar(self, intersection_id: str, sensor_id: str,
+                     points: List[Dict], timestamp: Optional[float] = None,
+                     sequence: int = 0, expected_packets: int = 0,
+                     received_packets: int = 0) -> Dict:
+        """Sensor-layer entry point: one 4D LiDAR frame for an intersection."""
+        inter = self.get_intersection(intersection_id)
+        return inter.ingest_lidar(
+            sensor_id, points, timestamp=timestamp, sequence=sequence,
+            expected_packets=expected_packets,
+            received_packets=received_packets,
+        )
+
+    def register_sensor(self, intersection_id: str, sensor_id: str,
+                        sensor_type: str, pose: Optional[Dict] = None,
+                        label: str = "") -> Dict:
+        inter = self.get_intersection(intersection_id)
+        return inter.register_sensor(sensor_id, sensor_type, pose=pose,
+                                     label=label)
+
+    def incidents(self, limit: int = 50) -> List[Dict]:
+        """Merged incident feed across all intersections, newest first."""
+        merged: List[Dict] = []
+        for inter in self.list_intersections():
+            merged.extend(inter.incidents.recent_incidents(limit=limit))
+        merged.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+        return merged[:limit]
+
+    def governance(self) -> Dict:
+        """Fleet-wide privacy/data-governance posture."""
+        inters = self.list_intersections()
+        return {
+            "mode": "geometry-only",
+            "id_retention_s": self.ID_RETENTION_S,
+            "retention_policies": {
+                i.id: dict(i.retention_policy) for i in inters
+            },
+            "audit_log_entries": sum(len(i.governance_audit) for i in inters),
+            "note": ("CityOS consumes detection geometry only - no face "
+                     "embeddings, plate text or imagery enter this layer; "
+                     "track ids are ephemeral and expire automatically"),
+        }
+
+    @staticmethod
+    def reconstruct(recording: Dict) -> Dict:
+        """Deterministic reconstruction from an exported replay recording.
+
+        Returns a read-only view that answers 'what did the twin believe at
+        time T?' without touching any live intersection state.
+        """
+        snapshots = sorted(recording.get("snapshots", []),
+                           key=lambda s: s.get("timestamp", 0))
+        if not snapshots:
+            return {"error": "recording contains no snapshots"}
+        return {
+            "intersection_id": recording.get("intersection_id"),
+            "label": recording.get("label"),
+            "is_reconstruction": True,
+            "snapshot_count": len(snapshots),
+            "window": {
+                "start": snapshots[0].get("timestamp"),
+                "end": snapshots[-1].get("timestamp"),
+            },
+            "snapshots": snapshots,
+        }
 
     def alerts(self, limit: int = 50, kind: Optional[str] = None) -> List[Dict]:
         """Merged alert feed across all intersections, newest first."""

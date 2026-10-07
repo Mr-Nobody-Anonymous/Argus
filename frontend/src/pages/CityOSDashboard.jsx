@@ -20,7 +20,7 @@ import {
 } from 'recharts';
 import { cityosAPI, cameraAPI } from '../services/api';
 import { C, MONO, glass, priorityColor } from '../theme';
-import { StatusDot } from '../components/ui';
+import { StatusDot, HudReticle } from '../components/ui';
 
 // ── Road-user visual language ────────────────────────────────────────────────
 const CATEGORY_STYLE = {
@@ -55,21 +55,36 @@ function TwinCanvas({ objects, signal }) {
         const W = canvas.width;
         const H = canvas.height;
 
-        // Background
-        ctx.fillStyle = '#070b11';
+        // Background - tactical dark void
+        ctx.fillStyle = '#030712';
         ctx.fillRect(0, 0, W, H);
 
-        // Roads: two crossing corridors through the middle.
         const cx = W / 2;
         const cy = H / 2;
-        const roadW = Math.min(W, H) * 0.22;
 
-        ctx.fillStyle = '#10161f';
+        // Subtle radar range concentric rings
+        ctx.strokeStyle = alpha(C.signal, 0.08);
+        ctx.lineWidth = 1;
+        [60, 120, 180, 240].forEach((r) => {
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.stroke();
+        });
+
+        // Roads: two crossing corridors through the middle
+        const roadW = Math.min(W, H) * 0.22;
+        ctx.fillStyle = '#0b1120';
         ctx.fillRect(cx - roadW / 2, 0, roadW, H);          // N-S road
         ctx.fillRect(0, cy - roadW / 2, W, roadW);          // E-W road
 
-        // Lane markings
-        ctx.strokeStyle = '#1f2c3c';
+        // Fine grid lines on road
+        ctx.strokeStyle = alpha(C.signal, 0.12);
+        ctx.lineWidth = 0.75;
+        ctx.strokeRect(cx - roadW / 2, 0, roadW, H);
+        ctx.strokeRect(0, cy - roadW / 2, W, roadW);
+
+        // Center lane markings
+        ctx.strokeStyle = alpha(C.signal, 0.35);
         ctx.setLineDash([8, 10]);
         ctx.lineWidth = 1.5;
         ctx.beginPath();
@@ -78,49 +93,64 @@ function TwinCanvas({ objects, signal }) {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Intersection box highlight
-        ctx.strokeStyle = alpha(C.signal, 0.25);
-        ctx.lineWidth = 1;
+        // Intersection box highlight with cyber glow
+        ctx.strokeStyle = alpha(C.signal, 0.5);
+        ctx.lineWidth = 1.5;
         ctx.strokeRect(cx - roadW / 2, cy - roadW / 2, roadW, roadW);
 
         // Crosswalk stripes at the four edges of the junction
-        ctx.fillStyle = alpha(C.textFaint, 0.35);
+        ctx.fillStyle = alpha(C.signal, 0.25);
         const stripe = 4;
         for (let i = -3; i <= 3; i++) {
             const off = i * stripe * 2.4;
-            // north & south crossings (across the N-S road)
             ctx.fillRect(cx + off, cy - roadW / 2 - 14, stripe, 10);
             ctx.fillRect(cx + off, cy + roadW / 2 + 4, stripe, 10);
-            // east & west crossings (across the E-W road)
             ctx.fillRect(cx - roadW / 2 - 14, cy + off, 10, stripe);
             ctx.fillRect(cx + roadW / 2 + 4, cy + off, 10, stripe);
         }
 
-        // Approach labels
-        ctx.fillStyle = C.textFaint;
-        ctx.font = `600 ${Math.round(W * 0.018)}px ${MONO}`;
-        ctx.textAlign = 'center';
-        ctx.fillText('N', cx, 16);
-        ctx.fillText('S', cx, H - 8);
-        ctx.fillText('W', 12, cy + 4);
-        ctx.fillText('E', W - 12, cy + 4);
+        // Radar Crosshair Ticks & Angle markers
+        ctx.strokeStyle = alpha(C.signal, 0.3);
+        ctx.lineWidth = 1;
+        const tickLen = 8;
+        // North
+        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, tickLen); ctx.stroke();
+        // South
+        ctx.beginPath(); ctx.moveTo(cx, H); ctx.lineTo(cx, H - tickLen); ctx.stroke();
+        // West
+        ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(tickLen, cy); ctx.stroke();
+        // East
+        ctx.beginPath(); ctx.moveTo(W, cy); ctx.lineTo(W - tickLen, cy); ctx.stroke();
 
-        // Signal state glow in the centre
+        // Approach labels in tactical monospace font
+        ctx.fillStyle = C.signal;
+        ctx.font = `700 ${Math.round(W * 0.019)}px ${MONO}`;
+        ctx.textAlign = 'center';
+        ctx.fillText('N ▲', cx, 20);
+        ctx.fillText('S ▼', cx, H - 8);
+        ctx.fillText('◀ W', 20, cy + 5);
+        ctx.fillText('E ▶', W - 20, cy + 5);
+
+        // Center Signal State Indicator with multi-ring pulse
         if (signal) {
             const sc = SIGNAL_STATE_COLOR[signal.state] || C.textDim;
             ctx.beginPath();
-            ctx.arc(cx, cy, 12, 0, Math.PI * 2);
-            ctx.fillStyle = alpha(sc, 0.18);
+            ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+            ctx.fillStyle = alpha(sc, 0.15);
             ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, 14, 0, Math.PI * 2);
             ctx.strokeStyle = sc;
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 2;
             ctx.stroke();
+
             ctx.fillStyle = sc;
-            ctx.font = `700 ${Math.round(W * 0.02)}px ${MONO}`;
-            ctx.fillText(signal.phase === 'NS' ? '↕' : '↔', cx, cy + 5);
+            ctx.font = `800 ${Math.round(W * 0.022)}px ${MONO}`;
+            ctx.fillText(signal.phase === 'NS' ? '↕' : '↔', cx, cy + 6);
         }
 
-        // Road users: trajectory trail, velocity vector, body.
+        // Road users: trajectory trail, velocity vector, body, and targeting brackets
         for (const obj of objects || []) {
             const style = CATEGORY_STYLE[obj.category] || CATEGORY_STYLE.other;
             const px = obj.position.x * W;
@@ -129,8 +159,8 @@ function TwinCanvas({ objects, signal }) {
             // Trajectory trail
             const traj = obj.trajectory || [];
             if (traj.length > 1) {
-                ctx.strokeStyle = alpha(style.color, 0.35);
-                ctx.lineWidth = 1.25;
+                ctx.strokeStyle = alpha(style.color, 0.45);
+                ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 traj.forEach(([tx, ty], idx) => {
                     const x = tx * W;
@@ -147,50 +177,84 @@ function TwinCanvas({ objects, signal }) {
                 const idx = compass.indexOf(obj.heading);
                 if (idx >= 0) {
                     const angle = (idx * 45 * Math.PI) / 180;
-                    const len = Math.min(30, 6 + obj.speed_mps * 2.2);
+                    const len = Math.min(32, 8 + obj.speed_mps * 2.4);
                     const hx = px + Math.sin(angle) * len;
                     const hy = py - Math.cos(angle) * len;
-                    ctx.strokeStyle = alpha(style.color, 0.85);
-                    ctx.lineWidth = 1.5;
+                    ctx.strokeStyle = alpha(style.color, 0.95);
+                    ctx.lineWidth = 1.75;
                     ctx.beginPath();
                     ctx.moveTo(px, py);
                     ctx.lineTo(hx, hy);
                     ctx.stroke();
                     // arrowhead
-                    ctx.fillStyle = alpha(style.color, 0.85);
+                    ctx.fillStyle = alpha(style.color, 0.95);
                     ctx.beginPath();
-                    ctx.arc(hx, hy, 2, 0, Math.PI * 2);
+                    ctx.arc(hx, hy, 2.5, 0, Math.PI * 2);
                     ctx.fill();
                 }
             }
 
-            // Body
+            // Radar targeting reticle around vehicle
+            const boxSize = style.size + 4;
+            ctx.strokeStyle = alpha(style.color, 0.7);
+            ctx.lineWidth = 1;
+            const cLen = 3;
+            // top-left
+            ctx.beginPath(); ctx.moveTo(px - boxSize, py - boxSize + cLen); ctx.lineTo(px - boxSize, py - boxSize); ctx.lineTo(px - boxSize + cLen, py - boxSize); ctx.stroke();
+            // top-right
+            ctx.beginPath(); ctx.moveTo(px + boxSize - cLen, py - boxSize); ctx.lineTo(px + boxSize, py - boxSize); ctx.lineTo(px + boxSize, py - boxSize + cLen); ctx.stroke();
+            // bottom-left
+            ctx.beginPath(); ctx.moveTo(px - boxSize, py + boxSize - cLen); ctx.lineTo(px - boxSize, py + boxSize); ctx.lineTo(px - boxSize + cLen, py + boxSize); ctx.stroke();
+            // bottom-right
+            ctx.beginPath(); ctx.moveTo(px + boxSize - cLen, py + boxSize); ctx.lineTo(px + boxSize, py + boxSize); ctx.lineTo(px + boxSize, py - boxSize + cLen); ctx.stroke();
+
+            // Object Body with intense glowing shadow
             ctx.beginPath();
             ctx.arc(px, py, style.size, 0, Math.PI * 2);
             ctx.fillStyle = style.color;
             ctx.shadowColor = style.color;
-            ctx.shadowBlur = 8;
+            ctx.shadowBlur = 10;
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            // Track id for vehicles only, to avoid clutter
+            // Track id & speed badge
             if (obj.category !== 'pedestrian') {
-                ctx.fillStyle = alpha(C.text, 0.75);
-                ctx.font = `500 ${Math.round(W * 0.014)}px ${MONO}`;
+                ctx.fillStyle = alpha(C.text, 0.9);
+                ctx.font = `600 ${Math.round(W * 0.015)}px ${MONO}`;
                 ctx.textAlign = 'left';
-                ctx.fillText(`#${obj.track_id}`, px + 8, py - 6);
+                const speedText = obj.speed_mps ? ` ${Math.round(obj.speed_mps * 3.6)}km/h` : '';
+                ctx.fillText(`#${obj.track_id}${speedText}`, px + boxSize + 3, py - 3);
             }
         }
+
+        // Top-left HUD telemetry banner on canvas
+        ctx.fillStyle = alpha(C.void, 0.85);
+        ctx.fillRect(8, 8, 220, 38);
+        ctx.strokeStyle = alpha(C.signal, 0.4);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(8, 8, 220, 38);
+
+        ctx.fillStyle = C.signal;
+        ctx.font = `700 9px ${MONO}`;
+        ctx.textAlign = 'left';
+        ctx.fillText('LIVE DIGITAL TWIN // SENSOR FUSION', 14, 20);
+        ctx.fillStyle = C.textFaint;
+        ctx.font = `500 8px ${MONO}`;
+        ctx.fillText('COORD: LOCAL ENU // HOMOGRAPHY MATRIX: LOCKED', 14, 32);
+        ctx.fillText(`OBJECTS TRACKED: ${objects?.length || 0}`, 14, 42);
+
     }, [objects, signal]);
 
     return (
         <Box sx={{
             position: 'relative',
-            border: `1px solid ${C.line}`,
-            borderRadius: 1.5,
+            border: `1px solid ${alpha(C.signal, 0.35)}`,
+            borderRadius: 2,
             overflow: 'hidden',
-            background: '#070b11',
+            background: '#030712',
+            boxShadow: `0 8px 32px rgba(0,0,0,0.6), 0 0 24px ${alpha(C.signal, 0.12)}`,
         }}>
+            <HudReticle color={C.signal} size={12} stroke={2} opacity={0.8} />
             <canvas
                 ref={canvasRef}
                 width={720}
@@ -199,14 +263,18 @@ function TwinCanvas({ objects, signal }) {
             />
             {/* Legend */}
             <Box sx={{
-                position: 'absolute', top: 8, right: 8,
-                ...glass(0.85), borderRadius: 1.5, p: 1,
-                display: 'flex', flexDirection: 'column', gap: 0.4,
+                position: 'absolute', top: 10, right: 10,
+                background: alpha(C.panel, 0.88),
+                backdropFilter: 'blur(8px)',
+                border: `1px solid ${C.line}`,
+                borderRadius: 1.5, p: 1,
+                display: 'flex', flexDirection: 'column', gap: 0.5,
+                zIndex: 2,
             }}>
                 {Object.entries(CATEGORY_STYLE).map(([key, s]) => (
                     <Box key={key} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        <Box sx={{ width: 7, height: 7, borderRadius: '50%', background: s.color }} />
-                        <Typography sx={{ fontFamily: MONO, fontSize: 9, color: C.textDim }}>
+                        <Box sx={{ width: 8, height: 8, borderRadius: '50%', background: s.color, boxShadow: `0 0 6px ${s.color}` }} />
+                        <Typography sx={{ fontFamily: MONO, fontSize: 9.5, fontWeight: 700, color: C.textDim, letterSpacing: '0.04em' }}>
                             {s.label.toUpperCase()}
                         </Typography>
                     </Box>
@@ -216,20 +284,40 @@ function TwinCanvas({ objects, signal }) {
     );
 }
 
-// ── Small stat card ──────────────────────────────────────────────────────────
+// ── Tactical Stat card ──────────────────────────────────────────────────────────
 function StatCard({ label, value, sub, color }) {
+    const valColor = color || C.signal;
     return (
-        <Card sx={{ ...glass(), borderRadius: 2 }}>
+        <Card sx={{
+            ...glass(0.75, valColor),
+            borderRadius: 2,
+            position: 'relative',
+            overflow: 'hidden',
+            transition: 'all 0.2s ease',
+            '&:hover': {
+                borderColor: alpha(valColor, 0.5),
+                boxShadow: `0 8px 24px rgba(0,0,0,0.5), 0 0 16px ${alpha(valColor, 0.15)}`,
+            },
+            '&::before': {
+                content: '""',
+                position: 'absolute',
+                top: 0, left: 0, right: 0, height: '2px',
+                background: `linear-gradient(90deg, transparent, ${valColor}, transparent)`,
+            },
+        }}>
+            <HudReticle color={valColor} size={6} stroke={1.5} opacity={0.4} />
             <CardContent sx={{ py: 1.5, px: 2 }}>
-                <Typography variant="overline">{label}</Typography>
+                <Typography variant="overline" sx={{ letterSpacing: '0.12em', color: C.textDim }}>{label}</Typography>
                 <Typography sx={{
-                    fontFamily: MONO, fontSize: 26, fontWeight: 700,
-                    color: color || C.text, lineHeight: 1.1,
+                    fontFamily: MONO, fontSize: 28, fontWeight: 800,
+                    color: valColor, lineHeight: 1.1,
+                    textShadow: `0 0 16px ${alpha(valColor, 0.35)}`,
+                    fontVariantNumeric: 'tabular-nums',
                 }}>
                     {value}
                 </Typography>
                 {sub && (
-                    <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textFaint, mt: 0.25 }}>
+                    <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textFaint, mt: 0.4, letterSpacing: '0.04em' }}>
                         {sub}
                     </Typography>
                 )}

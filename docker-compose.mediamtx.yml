@@ -2,14 +2,16 @@
 # RTSP/HLS/WebRTC stream ingestion and rebroadcasting
 version: '3.8'
 
+# Host-published development services bind to loopback by default.
+# Set ARGUS_DEV_BIND=0.0.0.0 only when remote access is intentional and firewalled.
 services:
   mediamtx:
     image: aler9/rtsp-simple-server:latest
     container_name: argus_mediamtx
     ports:
-      - "8554:8554"      # RTSP server
-      - "8080:8080"      # HTTP API/WebRTC
-      - "1935:1935"      # RTMP server
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:8554:8554"      # RTSP server
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:8080:8080"      # HTTP API/WebRTC
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:1935:1935"      # RTMP server
     volumes:
       - ./mediamtx/config.yml:/mediamtx/config.yml:ro
       - ./data/streams:/tmp/streams
@@ -21,7 +23,7 @@ services:
     image: bitnami/zookeeper:3.8
     container_name: argus_zookeeper
     ports:
-      - "2181:2181"
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:2181:2181"
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
 
@@ -29,7 +31,7 @@ services:
     image: bitnami/kafka:3.6
     container_name: argus_kafka
     ports:
-      - "9092:9092"
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:9092:9092"
     environment:
       - KAFKA_CFG_BROKER_ID=1
       - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
@@ -45,7 +47,7 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
     container_name: argus_elasticsearch
     ports:
-      - "9200:9200"
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:9200:9200"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -61,7 +63,7 @@ services:
     image: grafana/grafana-enterprise:10.2
     container_name: argus_grafana
     ports:
-      - "3001:3000"
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:3001:3000"
     volumes:
       - grafana-storage:/var/lib/grafana
     depends_on:
@@ -73,8 +75,8 @@ services:
     image: qdrant/qdrant:v1.9.0
     container_name: argus_qdrant
     ports:
-      - "6333:6333"  # REST API
-      - "6334:6334"  # gRPC
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:6333:6333"  # REST API
+      - "${ARGUS_DEV_BIND:-127.0.0.1}:6334:6334"  # gRPC
     volumes:
       - qdrant-storage:/qdrant/storage
     networks:

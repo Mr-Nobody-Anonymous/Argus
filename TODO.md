@@ -89,8 +89,8 @@ WebSocket to ~4 msg/s.
 | ✅ CORS allowlist | Replaced the browser-rejected `*` + credentials combination |
 | ✅ Prometheus `/metrics` + JSON logging | Found two live bugs within a minute of going live |
 | ✅ Frontend login, token refresh, WS `?token=` | Dashboard works against the authenticated API |
-| ✅ 44 automated tests | `test_regression.py` (23) + `test_api_security.py` (21), mutation-verified |
-| ✅ Swarm A/B benchmark | +26.8% FPS at identical detection quality |
+| ✅ Automated pytest suites | Regression, API security, CityOS, and sensor suites are collected by CI; check the latest Actions run for pass status.
+| ✅ Swarm A/B sample | One 40-frame run showed +26.8% FPS and equal detection counts; it did not measure ground-truth accuracy.
 
 ---
 
@@ -102,9 +102,7 @@ acceptance criteria.
 ## P0 — Blocks any real deployment
 - [ ] **TLS termination** (§2.4) — tokens currently travel in cleartext unless
       you front the service with a reverse proxy.
-- [ ] **Encrypt face embeddings at rest** (§2.3) — biometric data is stored
-      unencrypted. Retention deliberately excludes them, which makes encryption
-      the remaining gap.
+- [x] **Encrypt face embeddings at rest** (§2.3) — new embeddings are encrypted and recognition is off by default. Legacy plaintext crop files still require operator review and cleanup; production keys should be stored separately from the database.
 
 ## P1 — Operational maturity
 - [ ] Camera state machine with explicit lifecycle transitions (§3.1)
@@ -122,8 +120,7 @@ acceptance criteria.
 - [ ] Face anti-spoofing / liveness (§3.11)
 
 ## P2 — Scale & developer experience
-- [ ] **CI/CD** — 44 tests exist but nothing runs them automatically. There is
-      no `.github/` directory. This is the cheapest remaining win.
+- [x] **CI/CD workflows configured** — push and pull-request workflows cover backend checks, frontend build, security scans, and Docker verification. Confirm the first pushed runs pass in GitHub Actions.
 - [ ] Labelled evaluation clips + a written fitness function (§5) — the
       evolutionary engine currently optimises against no ground truth, so it can
       converge on something meaningless.

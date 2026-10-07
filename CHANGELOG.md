@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> No Git tags or GitHub Releases are currently published. Version-labelled sections below are project notes, not evidence of a published release.
+
+## Draft v0.2.0 notes (not yet released; updated 2026-09-30)
+
+### Security
+- **Purged Default Credentials**: Removed hardcoded `admin/admin123` across all scripts, Docker entrypoints, and documentation. Added secure random password generation on first run and CLI utility `python argus.py create-admin`.
+- **Biometric Encryption at Rest**: Implemented application-level authenticated encryption using **AES-256-GCM** with per-record nonces in `backend/security/crypto.py`. New face embeddings are encrypted at rest; legacy plaintext embeddings are upgraded when recognition is explicitly enabled.
+- **Cryptographic Audit Log**: Implemented SHA-256 hash chaining on all audit trail events in `backend/services/management/audit_log.py` with tamper-detection verification endpoint (`GET /api/v1/audit/integrity`).
+- **Sliding-Window Rate Limiting**: Added `RateLimitMiddleware` protecting sensitive authentication endpoints (`/api/v1/auth/*`) against brute-force and credential stuffing.
+- **Security Headers & CORS**: Injected defensive headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection`, `Referrer-Policy`) and restricted CORS handling.
+- **Added SECURITY.md**: Established a responsible vulnerability-reporting route and severity triage guidance without promising a response-time SLA.
+
+### Added
+- **PostgreSQL Database Adapter & Migration Tool**: Added `backend/database/postgres.py` with automatic connection routing via `DATABASE_URL` and `backend/scripts/migrate_sqlite_to_pg.py` for SQLite-to-PostgreSQL migration.
+- **Automated Security CI Workflows**: Added `.github/workflows/security.yml` (running `pip-audit`, `bandit`, `npm audit`), `.github/workflows/docker.yml`, and `.github/dependabot.yml`.
+- **Pre-commit Hooks**: Added `.pre-commit-config.yaml` with trailing whitespace, YAML validation, Ruff, and Bandit checks.
+- **Evaluation Harness**: Added a metrics engine for Precision, Recall, F1, and ID-switch measurements. A public labeled ground-truth dataset is not included yet.
+- **Reproducible Benchmark Suite**: Added `benchmarks/benchmark.py` recording hardware environment metadata, latency, and throughput FPS.
+- **Production TLS Configurations**: Added reference configurations for Caddy (`infrastructure/caddy/Caddyfile`) and Nginx (`infrastructure/nginx/nginx.conf`).
+- **GitHub Contribution Templates**: Added `.github/ISSUE_TEMPLATE/` (bug report, feature request, security report) and `.github/PULL_REQUEST_TEMPLATE.md`.
+
 ## CityOS — intersection intelligence layer
 
 A geometry-only traffic-intelligence layer inspired by Aeva CityOS, built on
@@ -210,6 +231,13 @@ intrusion and loitering. All three are now implemented, plus `line_crossing`.
 
 ## [Unreleased]
 
+### Security and operations
+- Default local and development bindings to loopback; require explicit configuration to expose services on a network.
+- Default face recognition to opt-in, stop persisting new source face crops, and encrypt legacy plaintext embeddings when recognition is enabled.
+- Harden the admin setup command against shell/code injection and require stronger passwords.
+- Make dependency audit failures visible in CI and verify the Docker image runs as a non-root user.
+- Correct the security policy and roadmap to avoid unsupported response-time promises and stale status claims.
+
 ### Added
 - CI check that fails when a package is declared in `requirements.txt` but
   imported nowhere (with an explicit allowlist for framework plugins and
@@ -317,7 +345,7 @@ intrusion and loitering. All three are now implemented, plus `line_crossing`.
   depending on install order. It is now declared once, in the core file. CI
   fails on any future overlap.
 
-## [2.1.0]
+## Historical notes for version 2.1.0 (no published tag or GitHub release)
 
 ### Added
 - JWT authentication and role-based access control (admin / operator / viewer)
@@ -342,5 +370,4 @@ intrusion and loitering. All three are now implemented, plus `line_crossing`.
 - Static `/snapshots` mount bypassing route authentication.
 - Repository size reduced from 117 MB to 13 MB; runtime data removed from git.
 
-[Unreleased]: https://github.com/Mr-Nobody-Anonymous/Argus/compare/v2.1.0...HEAD
-[2.1.0]: https://github.com/Mr-Nobody-Anonymous/Argus/releases/tag/v2.1.0
+[Unreleased]: https://github.com/Mr-Nobody-Anonymous/Argus/commits/main/

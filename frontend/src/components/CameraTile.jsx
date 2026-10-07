@@ -31,7 +31,7 @@ import { alpha } from '@mui/material/styles';
 import { Fullscreen, VideocamOff, CenterFocusStrong } from '@mui/icons-material';
 import { buildStreamUrl } from '../services/api';
 import { C, MONO } from '../theme';
-import { StatusDot, Tag } from './ui';
+import { StatusDot, Tag, HudReticle } from './ui';
 
 // A feed is stale if no frame has arrived within this window, and considered
 // offline beyond the second. Both are generous relative to the 4-10 fps the
@@ -319,15 +319,18 @@ export default function CameraTile({
                 borderRadius: 2,
                 overflow: 'hidden',
                 background: '#000',
-                border: `1px solid ${phase === 'live' ? alpha(C.signal, 0.28) : C.line}`,
+                border: `1px solid ${phase === 'live' ? alpha(C.signal, 0.4) : C.line}`,
+                boxShadow: phase === 'live' ? `0 0 16px ${alpha(C.signal, 0.12)}` : 'none',
                 transition: 'border-color .3s, box-shadow .3s',
                 '&:hover': {
-                    borderColor: alpha(C.signal, 0.6),
-                    boxShadow: `0 0 0 1px ${alpha(C.signal, 0.25)}, 0 8px 30px ${alpha('#000', 0.7)}`,
+                    borderColor: C.signal,
+                    boxShadow: `0 0 24px ${alpha(C.signal, 0.35)}, 0 8px 30px ${alpha('#000', 0.8)}`,
                 },
                 '&:hover .tile-actions': { opacity: 1 },
             }}
         >
+            <HudReticle color={phase === 'live' ? C.signal : C.lineHi} size={10} stroke={1.5} opacity={phase === 'live' ? 0.75 : 0.4} />
+
             <Box
                 component="img"
                 ref={imgRef}
@@ -363,7 +366,8 @@ export default function CameraTile({
             <Box sx={{
                 position: 'absolute', top: 0, left: 0, right: 0,
                 display: 'flex', alignItems: 'center', gap: 1, px: 1.25, py: 0.9,
-                background: `linear-gradient(180deg, ${alpha('#000', 0.85)}, transparent)`,
+                background: `linear-gradient(180deg, ${alpha('#000', 0.88)}, transparent)`,
+                zIndex: 2,
             }}>
                 <StatusDot color={phaseMeta.color} pulse={phase === 'live'} title={phaseMeta.label} />
                 <Typography sx={{
@@ -372,6 +376,14 @@ export default function CameraTile({
                 }} noWrap>
                     {camera?.name || `CAM ${cameraId}`}
                 </Typography>
+                {phase === 'live' && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, px: 0.6, py: 0.1, borderRadius: 0.5, bgcolor: alpha(C.critical, 0.18), border: `1px solid ${alpha(C.critical, 0.4)}` }}>
+                        <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: C.critical, animation: 'argus-pulse 1.2s infinite' }} />
+                        <Typography sx={{ fontFamily: MONO, fontSize: 8.5, fontWeight: 800, color: C.critical, letterSpacing: '0.08em' }}>
+                            REC
+                        </Typography>
+                    </Box>
+                )}
                 {camera?.location_tag && (
                     <Typography sx={{
                         fontFamily: MONO, fontSize: 9.5, color: C.textDim,

@@ -46,7 +46,8 @@ Every target uses the same environment variables.
 | Variable | Required | Purpose |
 |---|---|---|
 | `ARGUS_JWT_SECRET` | **Yes** | Token signing key, ≥32 chars. Generate: `openssl rand -base64 48`. Without a stable value every restart signs all operators out. The container refuses to start without it. |
-| `ARGUS_ADMIN_PASSWORD` | Strongly advised | Sets the first admin password. Applied **only** while the account still has the default `admin123`, so a later manual change is never reverted by a redeploy. |
+| `ARGUS_ADMIN_PASSWORD` | Strongly advised | Sets the initial admin password. If omitted, a random secure password is generated on first boot and printed once to the console. |
+| `ARGUS_BIOMETRIC_KEY` | Strongly advised | 32-byte key for AES-256-GCM encryption of biometric face embeddings at rest. If omitted, a key is auto-generated in `data/.biometric.key`. |
 | `ARGUS_DATA_DIR` | Yes, on any container | Where the database, snapshots and clips are written. **Must point at a mounted volume** or all of it is lost on restart. |
 | `PORT` | Auto | Injected by the platform; the entrypoint binds it. |
 | `ARGUS_CORS_ORIGINS` | Only when split | Comma-separated browser origins. Leave empty when the API serves the dashboard. |
