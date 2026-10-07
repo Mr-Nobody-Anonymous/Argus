@@ -41,7 +41,7 @@ pytorchvideo>=0.1.5
 # ── Optional infrastructure clients (Kafka / Elasticsearch / Qdrant) ──
 # Required by tests/infrastructure_healthcheck.py to probe these services.
 kafka-python>=2.0
-elasticsearch>=8.0
+elasticsearch>=9.5.1
 qdrant-client>=1.19.1
 # NOTE: django is a CORE dependency (see requirements.txt) - the admin UI is the
 # only way to manage the auth_user table that authentication depends on. It is
