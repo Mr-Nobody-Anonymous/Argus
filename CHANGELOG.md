@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies
 - Refresh vulnerable frontend dependencies, including the React Router v7 security fixes.
+- Align React 19, React Router 7, MUI 9, Framer Motion 14, Recharts 3, Vite 8, and their peer dependencies; regenerate the frontend lockfile.
+- Update the minimum versions for the core Python packages and optional Elasticsearch/Qdrant clients from the merged Dependabot branches.
 
 ### Fixed
 - Import `os` in the database adapter before reading `DATABASE_URL`, so schema initialization succeeds.
