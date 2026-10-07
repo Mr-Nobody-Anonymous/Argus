@@ -509,7 +509,7 @@ on port 8000), or `npm run dev` in `frontend/` for hot reload on port 3000.
 
 ## 📊 API Reference
 
-**98 registered routes**: 92 operations are under `/api/v1`; the rest are
+**98 registered routes**: 92 under `/api/v1`; the rest are
 system, streaming, WebSocket, and documentation endpoints. `GET /` is excluded:
 it serves the dashboard when `frontend/dist` exists and a build hint when it
 does not, so it is not part of the API surface.
