@@ -19,7 +19,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.4",
-    "recharts": "^2.10.3"
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
