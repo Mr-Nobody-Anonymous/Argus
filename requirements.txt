@@ -28,7 +28,7 @@ numpy>=1.24,<3.0
 Pillow>=10.2
 
 # ── Geometry, messaging, config ──
-shapely>=2.0
+shapely>=2.1.2
 paho-mqtt>=1.6
 pyyaml>=6.0
 psutil>=5.9
