@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > No Git tags or GitHub Releases are currently published. Version-labelled sections below are project notes, not evidence of a published release.
 
+## Unreleased
+
+### Security
+- Reject legacy MD5 password hashes; accounts using them must reset their passwords.
+- Restrict retention and perception-memory SQL to fixed query templates, and document the existing allowlists for dynamic update statements.
+- Require webhook URLs to be absolute HTTP(S) URLs without embedded credentials.
+- Clarify that the Python filter compiler constrains trusted generated code but is not a sandbox for hostile source.
+
+### Dependencies
+- Refresh vulnerable frontend dependencies, including the React Router v7 security fixes.
+
+### Fixed
+- Import `os` in the database adapter before reading `DATABASE_URL`, so schema initialization succeeds.
+
 ## Draft v0.2.0 notes (not yet released; updated 2026-09-30)
 
 ### Security

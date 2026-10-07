@@ -63,7 +63,7 @@ class CameraManager:
         values = list(updates.values()) + [camera_id]
         
         self.db.execute(
-            f"UPDATE cameras SET {set_clause} WHERE id = ?",
+            f"UPDATE cameras SET {set_clause} WHERE id = ?",  # nosec B608: columns are filtered by fixed allowed_fields; values are bound.
             tuple(values)
         )
         

@@ -52,7 +52,7 @@ Camera (RTSP/webcam)
     → processing_coordinator.py (swarm/fallback loop)
       → yolo_agent → detections (dict format)
       → deep_tracker → persistent track IDs
-      → logic_mutator → sandboxed filter
+      → logic_mutator → AST-constrained filter
       → consortium_broker → agent allocation
       → face_agent / lpr_agent (if allocated)
       → pose_estimator (person keypoints)

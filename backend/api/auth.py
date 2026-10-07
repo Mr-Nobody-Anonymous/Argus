@@ -114,9 +114,11 @@ def verify_django_password(raw_password: str, encoded: str) -> bool:
     """
     Verify a password against a Django password hash.
 
-    Supports Django's default ``pbkdf2_sha256`` and the ``unsalted_md5`` /
-    ``md5`` legacy formats. Comparison is constant-time. Unknown algorithms
-    return False rather than raising, so a malformed row cannot authenticate.
+    Supports Django's PBKDF2-SHA256 and PBKDF2-SHA1 formats. Legacy MD5 hashes
+    are deliberately rejected because they are too weak for password storage;
+    accounts using one must have their password reset. Comparison is constant-time.
+    Unknown algorithms return False rather than raising, so a malformed row
+    cannot authenticate.
     """
     if not encoded or not raw_password:
         return False
@@ -139,10 +141,6 @@ def verify_django_password(raw_password: str, encoded: str) -> bool:
             )
             return hmac.compare_digest(base64.b64encode(expected).decode(), digest)
 
-        if algorithm == "md5" and len(parts) == 3:
-            _, salt, digest = parts
-            expected = hashlib.md5((salt + raw_password).encode()).hexdigest()
-            return hmac.compare_digest(expected, digest)
     except (ValueError, TypeError) as exc:
         logger.warning(f"Malformed password hash encountered: {exc}")
         return False

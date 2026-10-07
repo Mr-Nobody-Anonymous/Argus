@@ -37,6 +37,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime
 from typing import Any, Dict, List, Optional
@@ -148,11 +149,21 @@ class WebhookTransport(Transport):
     def available(self) -> tuple[bool, str]:
         if not self.url:
             return False, "no webhook URL configured"
-        if not self.url.startswith(("http://", "https://")):
-            return False, f"webhook URL is not http(s): {self.url!r}"
-        if self.url.startswith("http://") and not self.url.startswith(
-            ("http://localhost", "http://127.0.0.1")
-        ):
+        try:
+            parsed_url = urlsplit(self.url)
+            invalid_url = (
+                parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname
+                or parsed_url.username or parsed_url.password
+            )
+        except ValueError:
+            invalid_url = True
+        if invalid_url:
+            return False, (
+                "webhook URL must be an absolute HTTP(S) URL without embedded credentials"
+            )
+        if parsed_url.scheme == "http" and parsed_url.hostname not in {
+            "localhost", "127.0.0.1", "::1"
+        }:
             # Delivered, but worth flagging: event payloads describe people.
             return True, "configured (WARNING: plaintext http to a remote host)"
         return True, "configured"
@@ -169,7 +180,8 @@ class WebhookTransport(Transport):
                 self.url, data=body, method="POST",
                 headers={"Content-Type": "application/json", **self.headers},
             )
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
+            # available() validates an absolute HTTP(S) URL first.
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:  # nosec B310
                 code = resp.status
             elapsed = (time.perf_counter() - started) * 1000
             if 200 <= code < 300:

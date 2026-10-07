@@ -87,7 +87,7 @@ class ZoneManager:
         values = list(updates.values()) + [zone_id]
         
         self.db.execute(
-            f"UPDATE zones SET {set_clause} WHERE id = ?",
+            f"UPDATE zones SET {set_clause} WHERE id = ?",  # nosec B608: columns are filtered by fixed allowed_fields; values are bound.
             tuple(values)
         )
         

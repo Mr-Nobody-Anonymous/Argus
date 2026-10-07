@@ -190,7 +190,7 @@ class FaceRecognitionAgent:
             # Run recognition with detect_emotions=False for speed
             results = self.face_recognition.recognize_faces(frame, detect_emotions=False)
         except Exception as e:
-            logger.warning(f"Face recognition error (sandboxed): {e}")
+            logger.warning(f"Face recognition error: {e}")
             results = []
         finally:
             self.face_recognition.track_timeout = original_min_size

@@ -1,13 +1,15 @@
 """
 Self-Referential Logic Mutation Engine
 
-Sandboxed code mutation engine that dynamically writes, compiles, tests,
-and hot-swaps small Python filter functions in memory.
+Constrained code mutation engine that dynamically writes, compiles, tests,
+and hot-swaps small Python filter functions in memory. The AST and restricted
+globals reduce capabilities but are not a security boundary for hostile code.
+Only use trusted, internally generated filter source.
 
 Security:
   - AST validation rejects unsafe node types and dunder access
-  - Isolated global scope with whitelisted builtins only
-  - No signal-based timers (thread-safe duration tracking instead)
+  - Restricted global scope with an explicit builtin allowlist
+  - Filter functions run in-process without a timeout; source must be trusted
   - Zero-cost fallback to static pipeline on any error
 """
 
@@ -38,7 +40,7 @@ class CodeVariant:
 
 
 class LogicMutator:
-    """Sandboxed code mutation engine."""
+    """AST-constrained code mutation engine for trusted generated filters."""
 
     DEFAULT_FILTER_CODE = '''
 def filter_detections(detections):
@@ -74,7 +76,6 @@ def filter_detections(detections):
         self.test_frame_count = self.lm_config.test_frame_count
         self.allowed_builtins = set(self.lm_config.allowed_builtin_overrides)
         self.allowed_imports = set(self.lm_config.allowed_imports)
-        self.sandbox_timeout_ms = self.lm_config.sandbox_timeout_ms
         self._variants: Dict[str, CodeVariant] = {}
         self._active_variant_id: Optional[str] = None
         self._lock = threading.RLock()
@@ -104,9 +105,8 @@ def filter_detections(detections):
     # ── Core API ──
 
     def compile_heuristic_filter(self, code_string: str) -> Callable:
-        """Compile a code string into a callable Python function.
-        Uses AST validation + isolated global scope.
-        Raises ValueError on syntax/AST errors."""
+        """Compile trusted filter source after AST and globals checks.
+        This is not a sandbox for hostile code. Raises ValueError on AST errors."""
         try:
             tree = ast.parse(code_string)
         except SyntaxError as e:
@@ -121,7 +121,9 @@ def filter_detections(detections):
         try:
             compiled = compile(tree, '<logic_mutator>', 'exec')
             local_ns: Dict[str, Any] = {}
-            exec(compiled, self._safe_globals, local_ns)
+            # The AST and globals checks constrain trusted generated source;
+            # this is not a sandbox and must never receive hostile code.
+            exec(compiled, self._safe_globals, local_ns)  # nosec B102
             if 'filter_detections' not in local_ns:
                 raise ValueError("Compiled code must define 'filter_detections' function")
             filter_func = local_ns['filter_detections']
@@ -203,7 +205,7 @@ def filter_detections(detections):
                 return result
             return detections
         except Exception as e:
-            logger.warning(f"Logic mutator filter error (sandboxed fallback): {e}")
+            logger.warning(f"Logic mutator filter error; using static fallback: {e}")
             with self._lock:
                 if self._active_variant_id:
                     variant = self._variants.get(self._active_variant_id)

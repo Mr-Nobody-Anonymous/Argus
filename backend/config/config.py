@@ -208,7 +208,6 @@ class LogicMutationConfig(BaseModel):
         "any", "all", "sorted", "filter", "map",
     ]
     allowed_imports: List[str] = ["math"]
-    sandbox_timeout_ms: int = 50
 
 
 class StateRecoveryConfig(BaseModel):

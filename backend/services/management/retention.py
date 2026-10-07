@@ -63,6 +63,17 @@ _DEFAULTS: Dict[str, Any] = {
 }
 
 
+_PURGE_QUERIES = {
+    ("events", "created_at"): "DELETE FROM events WHERE created_at < ?",
+    ("anomalies", "detected_at"): "DELETE FROM anomalies WHERE detected_at < ?",
+    ("license_plates", "detected_at"): "DELETE FROM license_plates WHERE detected_at < ?",
+    ("audit_log", "timestamp"): "DELETE FROM audit_log WHERE timestamp < ?",
+    ("perception_observations", "timestamp"): "DELETE FROM perception_observations WHERE timestamp < ?",
+    ("perception_appearances", "last_seen"): "DELETE FROM perception_appearances WHERE last_seen < ?",
+    ("perception_tracks", "last_seen"): "DELETE FROM perception_tracks WHERE last_seen < ?",
+}
+
+
 def _policy() -> Dict[str, Any]:
     cfg = section_to_dict(getattr(get_config(), "retention", None))
     merged = dict(_DEFAULTS)
@@ -87,6 +98,9 @@ def _purge_table(conn: sqlite3.Connection, table: str, column: str, days: int) -
     """Delete rows older than `days`. Returns rows removed (0 if absent)."""
     if days <= 0:
         return 0
+    query = _PURGE_QUERIES.get((table, column))
+    if query is None:
+        raise RetentionPolicyError(f"Unsupported retention table/column: {table}.{column}")
     try:
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -94,7 +108,7 @@ def _purge_table(conn: sqlite3.Connection, table: str, column: str, days: int) -
         if not exists:
             return 0
         cutoff = (datetime.now() - timedelta(days=days)).isoformat(sep=" ")
-        cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
+        cursor = conn.execute(query, (cutoff,))
         return cursor.rowcount or 0
     except sqlite3.Error as exc:
         # A missing table is legitimate (an optional feature was never used),

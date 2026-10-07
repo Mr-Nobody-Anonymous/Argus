@@ -269,7 +269,7 @@ get_yolo_detection_agent, get_face_recognition_agent, get_lpr_agent
 | 9 | `object_detection_tracker_refactored.py` | **DORMANT — not imported by any running code.** Refactored variant of the above, kept as the reference used for the swarm migration. |
 | 10 | `consortium_broker.py` | **Decentralised resource auctioneer.** Implements `AgentBid` (urgency, compute_cost, contextual_relevance, current_load) and `ResourceAllocation` (throttle_factor, priority_boost, should_process). Agents post context to a shared blackboard (`post_context()`/`read_context()`). `resolve_cycle()` computes proportional allocations against `_effective_budget_ms()` — actual measured demand when it exceeds the nominal 33 ms GPU-class budget, since a CPU YOLO pass costs ~130 ms. `PRIMARY_MIN_THROTTLE` guarantees the detector (`PRIMARY_AGENT_ID`) is never throttled: everything downstream derives from it, so starving it blinds the system rather than degrading it. Enrichment agents absorb contention instead. |
 | 11 | `evolutionary_engine.py` | **Self-contained genetic algorithm** (no external GA library) that synthesises new detection rules, evaluates fitness (inference speed, tracking accuracy, FP ratio, rule precision), and mutates pipeline parameters. `record_frame_metrics()` collects per-frame telemetry. `get_optimization_vector()` returns best-known gene vector. |
-| 12 | `logic_mutator.py` | **Self-referential logic mutation engine.** Generates Python one-liner filter rules in a sandboxed `eval()` environment (restricted builtins, only `math` imports). Tests rules against cached frames, prunes low-fitness variants. |
+| 12 | `logic_mutator.py` | **Self-referential logic mutation engine.** Generates internal Python filter rules with AST checks and restricted globals; this is not a sandbox for hostile code. Tests rules against cached frames, prunes low-fitness variants. |
 | 13 | `stream_ws.py` | **Legacy duplicate of `api/stream_ws.py`.** Not registered by `main.py`; the live WebSocket route comes from `backend/api/stream_ws.py`. Retained for backward compatibility. |
 
 ---
@@ -622,7 +622,7 @@ Typed endpoint exports:
      → YOLO Agent (yolo_detection_agent.py)
        → InferenceEngine.detect_objects() → List[Dict {class_name, confidence, bbox}]
        → DeepTracker.update() → Kalman filter → adds track_id
-       → LogicMutator.apply_filter() → sandboxed rule filter
+       → LogicMutator.apply_filter() → AST-constrained rule filter
      → ConsortiumBroker.post_context() → "human_detected", "vehicle_detected"
      → Agent bids → broker resolves → face/lpr agents may process
      → Face Agent / LPR Agent / PoseEstimator (conditional)

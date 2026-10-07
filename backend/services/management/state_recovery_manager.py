@@ -288,7 +288,7 @@ class StateRecoveryManager:
     def increment_error_count(self) -> int:
         """Increment the consecutive error counter.
 
-        Called by ProcessingCoordinator when a sandboxed error occurs
+        Called by ProcessingCoordinator when a subsystem error occurs
         in the processing loop. Returns the new error count.
         """
         with self._status_lock:
@@ -366,7 +366,7 @@ class StateRecoveryManager:
         """Check if error count has exceeded the allowed threshold.
 
         Consecutive errors accumulate when ProcessingCoordinator encounters
-        sandboxed exceptions. If they exceed max_allowed_consecutive_errors,
+        caught subsystem exceptions. If they exceed max_allowed_consecutive_errors,
         a rollback is triggered.
         """
         with self._status_lock:

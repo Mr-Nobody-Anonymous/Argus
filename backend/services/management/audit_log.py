@@ -256,10 +256,11 @@ class AuditLog:
         try:
             with self._connect() as conn:
                 total = conn.execute(
-                    f"SELECT COUNT(*) FROM audit_log {where}", params
+                    f"SELECT COUNT(*) FROM audit_log {where}",  # nosec B608: `where` uses fixed predicates above; values are bound.
+                    params
                 ).fetchone()[0]
                 rows = conn.execute(
-                    f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                    f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",  # nosec B608: `where` uses fixed predicates; values use placeholders.
                     (*params, limit, offset),
                 ).fetchall()
 

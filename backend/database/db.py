@@ -3,6 +3,7 @@ Database schema and initialization for Argus
 """
 
 # cspell:words rtsp argus
+import os
 import sqlite3
 import threading
 from pathlib import Path

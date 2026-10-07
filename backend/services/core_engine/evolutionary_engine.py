@@ -971,7 +971,7 @@ class EvolutionaryEngine:
                         score = self.evaluator.compute_variant_fitness(variant, snapshot)
                         fitness_scores[variant.variant_id] = score
                     except Exception as e:
-                        # Sandboxed execution: failed variant gets zero fitness
+                        # Constrained generated code: failed variant gets zero fitness
                         logger.warning(
                             f"Variant {variant.variant_id} threw error, zeroing fitness: {e}"
                         )

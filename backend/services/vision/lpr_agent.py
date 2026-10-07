@@ -194,7 +194,7 @@ class LprAgent:
         try:
             results = self.lpr_service.detect_plates(frame, detections)
         except Exception as e:
-            logger.warning(f"LPR error (sandboxed): {e}")
+            logger.warning(f"LPR error: {e}")
             results = []
         finally:
             self.lpr_service.min_confidence = original_min_confidence

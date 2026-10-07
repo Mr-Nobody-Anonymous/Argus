@@ -342,7 +342,7 @@ curl http://localhost:8000/api/v1/cameras -H "Authorization: Bearer $TOKEN"
 | **Face Recognition Agent** | Face matching when persons detected | Evolves `match_distance_threshold`, `min_face_size_px`, `track_timeout`, `frame_skip_cadence`. |
 | **LPR Agent** | License plate OCR when vehicles detected | Evolves `segmentation_threshold`, `min_plate_height_px`, `resolution_downscale`, `detection_confidence`, `ocr_beam_width`. |
 | **Consortium Broker** | Resource auctioneer | Collects agent bids → resolves allocations → posts context to shared blackboard. |
-| **Logic Mutator** | Sandboxed rule gen | Synthesises, tests, and mutates Python detection-filter rules (sandboxed `eval`). |
+| **Logic Mutator** | AST-constrained rule generation | Generates and evaluates internal Python filter rules with AST checks and restricted globals. This is not a sandbox for hostile code. |
 | **Evolutionary Engine** | Cross-agent optimiser | Runs a self-contained genetic algorithm (elitism, crossover, Gaussian mutation) over the pipeline parameter space. No external GA library is used. |
 
 #### What one recorded swarm run measured
@@ -398,7 +398,7 @@ python tests/swarm_benchmark.py --frames 40 --json docs/swarm_benchmark_results.
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │
                                              │  │  LogicMutator          │  │
-                                             │  │  →sandboxed rule filter│  │
+                                             │  │  →AST-constrained rule filter│  │
                                              │  └───────────┬────────────┘  │
                                              │              ▼               │
                                              │  ┌────────────────────────┐  │

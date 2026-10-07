@@ -657,14 +657,16 @@ class PerceptionMemory:
     # -- housekeeping ---------------------------------------------------------
 
     def count(self, table: str) -> int:
-        mapping = {"observations": "perception_observations",
-                   "appearances": "perception_appearances",
-                   "tracks": "perception_tracks"}
-        name = mapping.get(table, table)
-        if name not in mapping.values():
+        queries = {
+            "observations": "SELECT COUNT(*) FROM perception_observations",
+            "appearances": "SELECT COUNT(*) FROM perception_appearances",
+            "tracks": "SELECT COUNT(*) FROM perception_tracks",
+        }
+        query = queries.get(table)
+        if query is None:
             raise ValueError(f"Unknown table '{table}'")
         with self._lock, self._connect() as conn:
-            return int(conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+            return int(conn.execute(query).fetchone()[0])
 
     def purge_expired(self, observation_days: int, appearance_days: int
                       ) -> Dict[str, int]:

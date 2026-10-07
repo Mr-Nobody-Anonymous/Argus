@@ -263,11 +263,11 @@ class ProcessingCoordinator:
         if self.deep_tracker.enabled:
             detections = self.deep_tracker.update(detections, enhanced_frame)
 
-        # ── Apply dynamic logic mutation filter (sandboxed) ──
+        # ── Apply AST-constrained dynamic logic mutation filter ──
         try:
             detections = self.logic_mutator.apply_filter(detections)
         except Exception as e:
-            logger.warning(f"Logic mutator filter error (sandboxed fallback): {e}")
+            logger.warning(f"Logic mutator filter error; using static fallback: {e}")
 
         # ── Post context to broker blackboard ──
         if self.consortium_broker.enabled:
@@ -366,7 +366,7 @@ class ProcessingCoordinator:
             try:
                 face_results = self.face_agent.process_frame(enhanced_frame, camera_id)
             except Exception as e:
-                logger.warning(f"Face agent error (sandboxed): {e}")
+                logger.warning(f"Face agent error: {e}")
 
         # ── Step 5: LPR Agent (runs if allocation allows) ──
         lpr_results = []
@@ -375,7 +375,7 @@ class ProcessingCoordinator:
             try:
                 lpr_results = self.lpr_agent.process_frame(enhanced_frame, camera_id, detections)
             except Exception as e:
-                logger.warning(f"LPR agent error (sandboxed): {e}")
+                logger.warning(f"LPR agent error: {e}")
 
         # ── Step 6: Pose Estimation (always runs, lightweight) ──
         pose_results = []
@@ -459,11 +459,11 @@ class ProcessingCoordinator:
         if self.deep_tracker.enabled:
             detections = self.deep_tracker.update(detections, enhanced_frame)
 
-        # Step 2c: Apply dynamic logic mutation filter (sandboxed)
+        # Step 2c: Apply AST-constrained dynamic logic mutation filter
         try:
             detections = self.logic_mutator.apply_filter(detections)
         except Exception as e:
-            logger.warning(f"Logic mutator filter error (sandboxed fallback): {e}")
+            logger.warning(f"Logic mutator filter error; using static fallback: {e}")
 
         try:
             self.evidence.record(camera_id, enhanced_frame, frame_time)

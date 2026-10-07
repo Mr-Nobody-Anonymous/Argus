@@ -206,7 +206,6 @@ logic_mutation:
     - map
   allowed_imports:
     - math
-  sandbox_timeout_ms: 50
 
 # ── Byzantine Fault-Tolerant State Recovery Manager ──
 state_recovery:
