@@ -44,6 +44,7 @@ from backend.services.management.mqtt_publisher import get_mqtt_publisher
 from backend.services.vision.image_enhancement import get_image_enhancement
 from backend.services.vision.face_recognition import get_face_recognition
 from backend.services.vision.license_plate_recognition import get_license_plate_recognition
+from backend.services.vision.thermal_vision import get_thermal_vision
 from backend.services.analytics.anomaly_detector import get_anomaly_detector
 from backend.services.vision.pose_estimator import get_pose_estimator
 from backend.services.core_engine.deep_tracker import get_deep_tracker
@@ -933,6 +934,86 @@ async def analyze_image_quality(file: UploadFile = File(...)):
         }
     except Exception as e:
         logger.error(f"Error analyzing image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Thermal Vision Endpoints ====================
+
+@app.get("/api/v1/thermal/palettes", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_thermal_palettes():
+    """Get list of supported thermal false-color palettes and active palette"""
+    try:
+        thermal = get_thermal_vision()
+        return {
+            "palettes": thermal.get_calibration()["supported_palettes"],
+            "default_palette": thermal.default_palette,
+        }
+    except Exception as e:
+        logger.error(f"Error getting thermal palettes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/thermal/calibration", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def get_thermal_calibration():
+    """Get radiometric thermal calibration parameters"""
+    try:
+        thermal = get_thermal_vision()
+        return thermal.get_calibration()
+    except Exception as e:
+        logger.error(f"Error getting thermal calibration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/thermal/calibration", response_model=dict, dependencies=[Depends(require_role(ROLE_OPERATOR))])
+async def update_thermal_calibration(payload: dict = Body(...)):
+    """Update radiometric calibration (temp_min_c, temp_max_c, emissivity, default_palette)"""
+    try:
+        thermal = get_thermal_vision()
+        updated = thermal.update_calibration(
+            temp_min_c=payload.get("temp_min_c"),
+            temp_max_c=payload.get("temp_max_c"),
+            emissivity=payload.get("emissivity"),
+            default_palette=payload.get("default_palette"),
+        )
+        return {"status": "ok", "calibration": updated}
+    except Exception as e:
+        logger.error(f"Error updating thermal calibration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/thermal/analyze", response_model=dict, dependencies=[Depends(require_role(ROLE_VIEWER))])
+async def analyze_thermal_image(
+    file: UploadFile = File(...),
+    threshold_temp_c: float = 37.5,
+    palette: Optional[str] = None,
+):
+    """Analyze a thermal/infrared frame for hotspots, temperature stats, and thermal signatures"""
+    try:
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Invalid image file format")
+
+        thermal = get_thermal_vision()
+        roi_stats = thermal.get_roi_temperature(frame)
+        hotspots = thermal.detect_hotspots(frame, threshold_temp_c=threshold_temp_c)
+        signatures = thermal.detect_thermal_signatures(frame)
+
+        return {
+            "filename": file.filename,
+            "overall_temperature": roi_stats,
+            "threshold_temp_c": threshold_temp_c,
+            "hotspots_count": len(hotspots),
+            "hotspots": hotspots,
+            "thermal_signatures_count": len(signatures),
+            "thermal_signatures": signatures,
+            "active_palette": palette or thermal.default_palette,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing thermal image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

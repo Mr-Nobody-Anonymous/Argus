@@ -106,11 +106,9 @@ def test_red_light_running_detected_on_fresh_crossing():
     pe = PerceptionEngine("t")
     safety = SafetyAnalytics("t")
     t = time.time()
-    # Vehicle approaching the north stop line, then crossing it on red.
+    # Vehicle approaching the north stop line, then crossing it on red southward (y increasing).
     for i in range(6):
-        y = 0.28 - i * 0.02        # moves southward past y=0.32? no: 0.28 -> 0.18 crosses nothing
-        # Use positions crossing y=0.32 from above.
-        y = 0.36 - i * 0.02
+        y = 0.28 + i * 0.02
         pe.ingest(
             [det(50, "car", 0.48, y - 0.02, 0.52, y + 0.02)],
             [{"track_id": 50, "speed_mps": 8.0, "direction": "S"}],
@@ -129,7 +127,7 @@ def test_no_red_light_event_when_signal_green():
     safety = SafetyAnalytics("t")
     t = time.time()
     for i in range(6):
-        y = 0.36 - i * 0.02
+        y = 0.28 + i * 0.02
         pe.ingest(
             [det(51, "car", 0.48, y - 0.02, 0.52, y + 0.02)],
             [{"track_id": 51, "speed_mps": 8.0, "direction": "S"}],
@@ -173,7 +171,7 @@ def test_pet_conflict_when_object_follows_too_closely():
         frames.append(([det(70, "car", xa - 0.02, 0.49, xa + 0.02, 0.53)],
                        [{"track_id": 70, "speed_mps": 9.0, "direction": "E"}]))
     for i in range(8):
-        xb = 0.30 + i * 0.06
+        xb = 0.24 + i * 0.06
         frames.append(([det(71, "car", xb - 0.02, 0.49, xb + 0.02, 0.53)],
                        [{"track_id": 71, "speed_mps": 12.0, "direction": "E"}]))
     # Interleave so B trails A closely through the same cells.
@@ -185,8 +183,10 @@ def test_pet_conflict_when_object_follows_too_closely():
         else:
             idx = min(i // 2, 7)
             merged.append((frames[8 + idx][0], frames[8 + idx][1]))
-    _drive(pe, merged, t0=time.time() - 20)
-    safety.process(pe)
+    t0 = time.time() - 20
+    for i, (dets, analysis) in enumerate(merged):
+        pe.ingest(dets, analysis, t0 + i)
+        safety.process(pe)
     # The trailing object should have entered recently-vacated cells.
     assert safety.recent_events(kind="pet_conflict"), \
         "expected at least one PET conflict"
@@ -322,7 +322,7 @@ def test_engine_twin_includes_new_layers():
 def test_engine_calibration_update_changes_world_coords():
     engine = CityOSEngine()
     engine.set_calibration(3, {"view_width_m": 60.0, "view_height_m": 45.0})
-    engine.ingest(3, [det(9, "car", 0.75, 0.25, 0.85, 0.35)],
+    engine.ingest(3, [det(9, "car", 0.70, 0.20, 0.80, 0.30)],
                   [{"track_id": 9, "speed_mps": 5.0, "direction": "NE"}],
                   time.time())
     twin = engine.twin(camera_id=3)

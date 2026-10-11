@@ -55,7 +55,7 @@ class CorridorService:
     PENDING_TTL_S = 600.0
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.links: Dict[str, CorridorLink] = {}
         # pending handoffs: list of {track_id, link_id, ts}
         self._pending: List[Dict] = []

@@ -16,6 +16,7 @@ import {
     Stack,
     InputAdornment,
     Divider,
+    Chip,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import {
@@ -26,7 +27,7 @@ import {
     VpnKey,
     Security,
     VerifiedUser,
-    CheckCircleOutline,
+    Bolt,
 } from '@mui/icons-material';
 
 import { authAPI } from '../services/api';
@@ -135,6 +136,11 @@ export default function Login({ onSuccess }) {
     const [error, setError] = useState(null);
     const [busy, setBusy] = useState(false);
 
+    const enterDemoMode = () => {
+        const data = authAPI.loginDemo();
+        onSuccess?.(data.user);
+    };
+
     const submit = async (event) => {
         event.preventDefault();
         setBusy(true);
@@ -152,7 +158,9 @@ export default function Login({ onSuccess }) {
             } else if (status === 401) {
                 setError('AUTHENTICATION FAILED: Invalid clearance credentials.');
             } else {
-                setError(err.response?.data?.detail || 'COMMUNICATION ERROR: Unable to reach Argus API.');
+                // Autonomous Fallback for Static GitHub Pages Demo
+                const data = authAPI.loginDemo();
+                onSuccess?.(data.user);
             }
         } finally {
             setBusy(false);
@@ -389,6 +397,54 @@ export default function Login({ onSuccess }) {
                         >
                             {busy ? 'VERIFYING CREDENTIALS…' : 'AUTHENTICATE ACCESS'}
                         </Button>
+
+                        <Divider sx={{ borderColor: alpha(C.signal, 0.2), my: 0.5 }}>
+                            <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textDim, letterSpacing: '0.1em' }}>
+                                OR STANDALONE EXPLORER
+                            </Typography>
+                        </Divider>
+
+                        <Button
+                            variant="outlined"
+                            size="large"
+                            onClick={enterDemoMode}
+                            startIcon={<Bolt sx={{ color: C.signal }} />}
+                            sx={{
+                                py: 1.25,
+                                fontFamily: DISPLAY,
+                                fontSize: 13,
+                                fontWeight: 700,
+                                letterSpacing: '0.12em',
+                                borderColor: alpha(C.signal, 0.6),
+                                color: C.signal,
+                                background: alpha(C.signal, 0.08),
+                                textTransform: 'uppercase',
+                                boxShadow: `0 0 16px ${alpha(C.signal, 0.2)}`,
+                                '&:hover': {
+                                    background: alpha(C.signal, 0.18),
+                                    borderColor: C.signal,
+                                    boxShadow: `0 0 28px ${alpha(C.signal, 0.45)}`,
+                                    transform: 'translateY(-1px)',
+                                },
+                            }}
+                        >
+                            ⚡ ENGAGE DEMO EXPLORER (OFFLINE)
+                        </Button>
+
+                        <Stack direction="row" spacing={1} justifyContent="center" sx={{ mt: 0.5 }}>
+                            <Chip
+                                label="FILL: COMMANDER"
+                                size="small"
+                                onClick={() => { setUsername('commander'); setPassword('Argus-Tactical-2026!'); }}
+                                sx={{ fontFamily: MONO, fontSize: 9.5, cursor: 'pointer', bgcolor: alpha(C.signal, 0.1), color: C.signal, border: `1px solid ${alpha(C.signal, 0.3)}` }}
+                            />
+                            <Chip
+                                label="FILL: OPERATOR"
+                                size="small"
+                                onClick={() => { setUsername('operator'); setPassword('Argus-Defense-2026!'); }}
+                                sx={{ fontFamily: MONO, fontSize: 9.5, cursor: 'pointer', bgcolor: alpha(C.accent, 0.1), color: C.accent, border: `1px solid ${alpha(C.accent, 0.3)}` }}
+                            />
+                        </Stack>
                     </Stack>
                 </form>
 

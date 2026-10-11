@@ -302,14 +302,135 @@ export default function CameraTile({
         return () => clearInterval(tick);
     }, []);
 
+    // Synthetic simulation loop when live stream socket is offline (Standalone Demo mode)
+    useEffect(() => {
+        let simFrameId;
+        let simTime = (Number(String(cameraId).replace(/\D/g, '')) || 1) * 35;
+        const simLoop = () => {
+            const canvas = canvasRef.current;
+            const img = imgRef.current;
+            // Only draw simulation when real MJPEG frames are not arriving
+            if (canvas && (!img || !img.naturalWidth || !lastFrameAt.current)) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.width && rect.height) {
+                    const dpr = window.devicePixelRatio || 1;
+                    if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
+                        canvas.width = Math.round(rect.width * dpr);
+                        canvas.height = Math.round(rect.height * dpr);
+                        canvas.style.width = `${rect.width}px`;
+                        canvas.style.height = `${rect.height}px`;
+                    }
+                    const ctx = canvas.getContext('2d');
+                    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ctx.clearRect(0, 0, rect.width, rect.height);
+
+                    simTime += 0.025;
+                    const W = rect.width;
+                    const H = rect.height;
+
+                    // Deep tactical background grid
+                    ctx.fillStyle = '#020617';
+                    ctx.fillRect(0, 0, W, H);
+
+                    ctx.strokeStyle = 'rgba(0, 242, 254, 0.06)';
+                    ctx.lineWidth = 1;
+                    for (let x = 0; x < W; x += 36) {
+                        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+                    }
+                    for (let y = 0; y < H; y += 36) {
+                        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+                    }
+
+                    // Tactical HUD crosshairs in center
+                    const cx = W / 2;
+                    const cy = H / 2;
+                    ctx.strokeStyle = 'rgba(0, 242, 254, 0.18)';
+                    ctx.beginPath();
+                    ctx.moveTo(cx - 20, cy); ctx.lineTo(cx + 20, cy);
+                    ctx.moveTo(cx, cy - 20); ctx.lineTo(cx, cy + 20);
+                    ctx.stroke();
+
+                    // Radar sweep sector
+                    const sweepX = ((Math.sin(simTime * 0.7) + 1) / 2) * W;
+                    const sweepGrad = ctx.createLinearGradient(sweepX - 35, 0, sweepX, 0);
+                    sweepGrad.addColorStop(0, 'rgba(0, 242, 254, 0)');
+                    sweepGrad.addColorStop(1, 'rgba(0, 242, 254, 0.14)');
+                    ctx.fillStyle = sweepGrad;
+                    ctx.fillRect(sweepX - 35, 0, 35, H);
+                    ctx.strokeStyle = 'rgba(0, 242, 254, 0.5)';
+                    ctx.beginPath(); ctx.moveTo(sweepX, 0); ctx.lineTo(sweepX, H); ctx.stroke();
+
+                    // Simulated Target 1 (Person)
+                    const p1x = (W * 0.28) + Math.sin(simTime * 0.8) * (W * 0.14);
+                    const p1y = (H * 0.35) + Math.cos(simTime * 0.6) * (H * 0.08);
+                    const p1w = 32;
+                    const p1h = 64;
+
+                    ctx.strokeStyle = '#00f2fe';
+                    ctx.lineWidth = 1.5;
+                    ctx.strokeRect(p1x, p1y, p1w, p1h);
+                    ctx.fillStyle = 'rgba(0, 242, 254, 0.08)';
+                    ctx.fillRect(p1x, p1y, p1w, p1h);
+
+                    const cLen = 4;
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath(); ctx.moveTo(p1x, p1y + cLen); ctx.lineTo(p1x, p1y); ctx.lineTo(p1x + cLen, p1y); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(p1x + p1w - cLen, p1y); ctx.lineTo(p1x + p1w, p1y); ctx.lineTo(p1x + p1w, p1y + cLen); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(p1x, p1y + p1h - cLen); ctx.lineTo(p1x, p1y + p1h); ctx.lineTo(p1x + cLen, p1y + p1h); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(p1x + p1w - cLen, p1y + p1h); ctx.lineTo(p1x + p1w, p1y + p1h); ctx.lineTo(p1x + p1w, p1y + p1h - cLen); ctx.stroke();
+
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+                    ctx.fillRect(p1x, p1y - 13, 86, 12);
+                    ctx.fillStyle = '#00f2fe';
+                    ctx.fillRect(p1x, p1y - 13, 2, 12);
+                    ctx.font = `700 8.5px ${MONO}`;
+                    ctx.fillText('#104 PERSON 98%', p1x + 5, p1y - 4);
+
+                    // Simulated Target 2 (Vehicle)
+                    const v1x = (W * 0.62) + Math.cos(simTime * 0.5) * (W * 0.12);
+                    const v1y = (H * 0.52) + Math.sin(simTime * 0.4) * (H * 0.06);
+                    const v1w = 64;
+                    const v1h = 38;
+
+                    ctx.strokeStyle = '#a855f7';
+                    ctx.lineWidth = 1.5;
+                    ctx.strokeRect(v1x, v1y, v1w, v1h);
+                    ctx.fillStyle = 'rgba(168, 85, 247, 0.08)';
+                    ctx.fillRect(v1x, v1y, v1w, v1h);
+
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+                    ctx.fillRect(v1x, v1y - 13, 82, 12);
+                    ctx.fillStyle = '#a855f7';
+                    ctx.fillRect(v1x, v1y - 13, 2, 12);
+                    ctx.font = `700 8.5px ${MONO}`;
+                    ctx.fillText('#208 SEDAN 95%', v1x + 5, v1y - 4);
+
+                    // Watermark / HUD coordinates
+                    ctx.fillStyle = 'rgba(0, 242, 254, 0.5)';
+                    ctx.font = `600 8px ${MONO}`;
+                    ctx.fillText('SYNTHETIC FEED // CALIBRATED SENSORS', 12, H - 28);
+                }
+            }
+            simFrameId = requestAnimationFrame(simLoop);
+        };
+        simFrameId = requestAnimationFrame(simLoop);
+        return () => cancelAnimationFrame(simFrameId);
+    }, [cameraId]);
+
+    const isSimulated = !lastFrameAt.current;
+    const effectivePhase = isSimulated ? 'synthetic' : phase;
     const phaseMeta = {
         connecting: { color: C.textFaint, label: 'CONNECTING' },
+        synthetic: { color: C.signal, label: 'SYNTHETIC' },
         live: { color: C.ok, label: 'LIVE' },
         stale: { color: C.warn, label: 'STALE' },
         offline: { color: C.danger, label: 'NO SIGNAL' },
-    }[phase];
+    }[effectivePhase];
 
-    const people = detections.filter((d) => d.class === 'person').length;
+    const people = isSimulated ? 1 : detections.filter((d) => d.class === 'person').length;
+    const activeTrackedCount = isSimulated ? 2 : detections.length;
+    const displayFps = isSimulated ? '30.0 FPS' : (fps != null ? `${fps.toFixed(1)} FPS` : '—.— FPS');
 
     return (
         <Box
@@ -351,7 +472,7 @@ export default function CameraTile({
 
             {/* Scanline sweep: a purely cosmetic cue that the tile is live.
                 Suppressed when it is not, so it can never imply liveness. */}
-            {phase === 'live' && (
+            {(phase === 'live' || isSimulated) && (
                 <Box sx={{
                     position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden',
                     '&::after': {
@@ -369,18 +490,18 @@ export default function CameraTile({
                 background: `linear-gradient(180deg, ${alpha('#000', 0.88)}, transparent)`,
                 zIndex: 2,
             }}>
-                <StatusDot color={phaseMeta.color} pulse={phase === 'live'} title={phaseMeta.label} />
+                <StatusDot color={phaseMeta.color} pulse={phase === 'live' || isSimulated} title={phaseMeta.label} />
                 <Typography sx={{
                     fontFamily: MONO, fontSize: 11, fontWeight: 700,
                     color: C.text, textShadow: '0 1px 3px #000', minWidth: 0,
                 }} noWrap>
                     {camera?.name || `CAM ${cameraId}`}
                 </Typography>
-                {phase === 'live' && (
+                {(phase === 'live' || isSimulated) && (
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.4, px: 0.6, py: 0.1, borderRadius: 0.5, bgcolor: alpha(C.critical, 0.18), border: `1px solid ${alpha(C.critical, 0.4)}` }}>
                         <Box sx={{ width: 5, height: 5, borderRadius: '50%', bgcolor: C.critical, animation: 'argus-pulse 1.2s infinite' }} />
                         <Typography sx={{ fontFamily: MONO, fontSize: 8.5, fontWeight: 800, color: C.critical, letterSpacing: '0.08em' }}>
-                            REC
+                            {isSimulated ? 'SIM-REC' : 'REC'}
                         </Typography>
                     </Box>
                 )}
@@ -403,12 +524,12 @@ export default function CameraTile({
                 background: `linear-gradient(0deg, ${alpha('#000', 0.9)}, transparent)`,
             }}>
                 <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textDim }}>
-                    {fps != null ? `${fps.toFixed(1)} FPS` : '—.— FPS'}
+                    {displayFps}
                 </Typography>
                 <Typography sx={{ fontFamily: MONO, fontSize: 10, color: C.textFaint }}>·</Typography>
                 <Tooltip title="Objects currently tracked in frame">
-                    <Typography sx={{ fontFamily: MONO, fontSize: 10, color: detections.length ? C.signal : C.textFaint }}>
-                        {detections.length} TRACKED
+                    <Typography sx={{ fontFamily: MONO, fontSize: 10, color: activeTrackedCount ? C.signal : C.textFaint }}>
+                        {activeTrackedCount} TRACKED
                     </Typography>
                 </Tooltip>
                 {people > 0 && (
@@ -439,7 +560,7 @@ export default function CameraTile({
                 )}
             </Box>
 
-            {phase === 'offline' && (
+            {!isSimulated && phase === 'offline' && (
                 <Box sx={{
                     position: 'absolute', inset: 0, display: 'flex',
                     flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1,
@@ -454,7 +575,7 @@ export default function CameraTile({
                 </Box>
             )}
 
-            {phase === 'connecting' && !lastFrameAt.current && (
+            {!isSimulated && phase === 'connecting' && !lastFrameAt.current && (
                 <Box sx={{
                     position: 'absolute', inset: 0, display: 'flex',
                     flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1,

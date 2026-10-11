@@ -46,6 +46,8 @@ yolov8*.pt
 frontend/dist/
 frontend/node_modules/
 data/argus_django.db
+gods-eye-view/
+*.pdf
 
 # ── Demo fixture (must be last: a negation only wins if no LATER rule
 # re-excludes the path, and `*.mp4` above would otherwise catch it) ──

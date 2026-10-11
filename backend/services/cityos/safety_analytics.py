@@ -93,8 +93,10 @@ class SafetyAnalytics:
     # ── Event plumbing ──────────────────────────────────────────────────
 
     def _emit(self, kind: str, severity: str, message: str,
-              actors: List[Dict], extra: Optional[Dict] = None):
-        now = time.time()
+              actors: List[Dict], extra: Optional[Dict] = None,
+              now: Optional[float] = None):
+        if now is None:
+            now = time.time()
         actor_key = "|".join(sorted(a["track_id"] for a in actors))
         dedup_key = f"{kind}:{actor_key}"
         last = self._last_event_at.get(dedup_key, 0)
@@ -272,7 +274,7 @@ class SafetyAnalytics:
 
     # ── Red-light / stop-line violations ────────────────────────────────
 
-    def _check_red_light(self, user_dict: Dict, approach_signal):
+    def _check_red_light(self, user_dict: Dict, approach_signal, now: Optional[float] = None):
         """Crossing the stop line while the approach shows red."""
         if user_dict["category"] not in ("vehicle", "truck", "bus", "motorcycle"):
             return
@@ -281,7 +283,19 @@ class SafetyAnalytics:
         approach = user_dict.get("approach") or "unknown"
         dist = user_dict.get("distance_to_stop_line_m")
         if dist is None:
-            return
+            pos = user_dict.get("position", {})
+            x = pos.get("x", 0.5)
+            y = pos.get("y", 0.5)
+            if approach == "north":
+                dist = (0.32 - y) * 22.5
+            elif approach == "south":
+                dist = (y - 0.68) * 22.5
+            elif approach == "west":
+                dist = (0.32 - x) * 30.0
+            elif approach == "east":
+                dist = (x - 0.68) * 30.0
+            else:
+                return
         past = dist <= 0.0
         key = str(user_dict["track_id"])
         was_past = self._was_past_line.get(key, False)
@@ -306,6 +320,7 @@ class SafetyAnalytics:
                     }],
                     {"approach": approach, "lane_id": lane,
                      "signal_state": state},
+                    now=now,
                 )
         elif not past:
             # Left the approach region cleanly; forget stale flags.
@@ -314,12 +329,13 @@ class SafetyAnalytics:
 
     # ── Stopped / disabled vehicles ─────────────────────────────────────
 
-    def _check_stopped(self, user_dict: Dict, approach_signal):
+    def _check_stopped(self, user_dict: Dict, approach_signal, now: Optional[float] = None):
         """A vehicle not moving while its approach has green = obstruction."""
         if user_dict["category"] not in ("vehicle", "truck", "bus"):
             return
         key = str(user_dict["track_id"])
-        now = time.time()
+        if now is None:
+            now = time.time()
         if user_dict["speed_mps"] < STOPPED_SPEED_MPS:
             entry = self._stationary_since.get(key)
             since = entry[0] if entry else now
@@ -328,7 +344,19 @@ class SafetyAnalytics:
             approach = user_dict.get("approach") or "unknown"
             state = approach_signal(approach) if approach_signal else None
             dist = user_dict.get("distance_to_stop_line_m")
-            upstream = dist is None or dist > 5.0
+            if dist is None:
+                pos = user_dict.get("position", {})
+                x = pos.get("x", 0.5)
+                y = pos.get("y", 0.5)
+                if approach == "north":
+                    dist = (0.32 - y) * 22.5
+                elif approach == "south":
+                    dist = (y - 0.68) * 22.5
+                elif approach == "west":
+                    dist = (0.32 - x) * 30.0
+                elif approach == "east":
+                    dist = (x - 0.68) * 30.0
+            upstream = dist is None or dist > 2.0
             # Disabled: motionless during green away from the stop line, or
             # motionless for a very long time anywhere.
             if ((state == "green" and duration >= STOPPED_ON_GREEN_S
@@ -346,6 +374,7 @@ class SafetyAnalytics:
                     }],
                     {"approach": approach, "stopped_s": round(duration, 1),
                      "signal_state": state},
+                    now=now,
                 )
         else:
             self._stationary_since.pop(key, None)
@@ -358,13 +387,14 @@ class SafetyAnalytics:
 
     # ── Post-encroachment time (PET) ────────────────────────────────────
 
-    def _check_pet(self, user_dict: Dict):
+    def _check_pet(self, user_dict: Dict, now: Optional[float] = None):
         """Object entering a cell another object recently vacated."""
         x = user_dict["position"]["x"]
         y = user_dict["position"]["y"]
         cell = (min(int(x * GRID), GRID - 1), min(int(y * GRID), GRID - 1))
         key = str(user_dict["track_id"])
-        now = time.time()
+        if now is None:
+            now = time.time()
 
         prev = self._prev_cell.get(key)
         if prev is not None and prev != cell:
@@ -386,6 +416,7 @@ class SafetyAnalytics:
                       "position": user_dict["position"]},
                      {"track_id": vacated[1], "category": "unknown"}],
                     {"pet_s": round(pet, 2)},
+                    now=now,
                 )
         if len(self._cell_vacated) > GRID * GRID * 4:
             cutoff = now - PET_THRESHOLD_S * 4
@@ -395,11 +426,12 @@ class SafetyAnalytics:
 
     # ── Hard braking ────────────────────────────────────────────────────
 
-    def _check_braking(self, user_dict: Dict):
+    def _check_braking(self, user_dict: Dict, now: Optional[float] = None):
         if user_dict["category"] not in ("vehicle", "truck", "bus", "motorcycle"):
             return
         key = str(user_dict["track_id"])
-        now = time.time()
+        if now is None:
+            now = time.time()
         hist = self._speed_history.setdefault(key, deque(maxlen=20))
         hist.append((now, user_dict["speed_mps"]))
         if len(hist) < 3:
@@ -421,6 +453,7 @@ class SafetyAnalytics:
                       "position": user_dict["position"]}],
                     {"drop_mps": round(drop, 1),
                      "decel_mps2": round(drop / dt, 1)},
+                    now=now,
                 )
                 break
         if len(self._speed_history) > 500:
@@ -433,7 +466,8 @@ class SafetyAnalytics:
     # ── Frame entry point ───────────────────────────────────────────────
 
     def process(self, perception: PerceptionEngine,
-                approach_signal=None):
+                approach_signal=None,
+                frame_time: Optional[float] = None):
         """Run every analyser over the current perception snapshot.
 
         approach_signal: optional callable approach -> "green"/"yellow"/"red".
@@ -442,16 +476,26 @@ class SafetyAnalytics:
         guessing the signal state.
         """
         users = perception.active_users()
+        now = frame_time
+        if now is None and users:
+            for u in users:
+                traj = u.get("trajectory")
+                if traj and len(traj) > 0:
+                    ts = traj[-1][2]
+                    if now is None or ts > now:
+                        now = ts
+        if now is None:
+            now = time.time()
+
         with self._lock:
             for u in users:
                 self._check_wrong_way(u)
-                self._check_red_light(u, approach_signal)
-                self._check_stopped(u, approach_signal)
-                self._check_pet(u)
-                self._check_braking(u)
+                self._check_red_light(u, approach_signal, now=now)
+                self._check_stopped(u, approach_signal, now=now)
+                self._check_pet(u, now=now)
+                self._check_braking(u, now=now)
             self._check_conflicts(users)
             # Bound the dedup table.
-            now = time.time()
             if len(self._last_event_at) > 500:
                 cutoff = now - 120
                 self._last_event_at = {
