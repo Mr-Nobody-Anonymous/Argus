@@ -30,7 +30,7 @@ Pillow>=12.3.0
 # ── Geometry, messaging, config ──
 shapely>=2.1.2
 paho-mqtt>=1.6
-pyyaml>=6.0
+pyyaml>=6.0.3
 psutil>=5.9
 
 # ── Analytics / scientific stack ──
